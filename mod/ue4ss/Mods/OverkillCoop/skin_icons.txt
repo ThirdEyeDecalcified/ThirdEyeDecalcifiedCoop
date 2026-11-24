@@ -1,0 +1,17 @@
+# Which skin-menu portrait (icons-skins-N) shows over a player's head for each skin.
+# Matched from in-game screenshots. If a portrait is wrong, change its number.
+Skin.Crypto.OG137 = 1
+Skin.Crypto.Damaged = 2
+Skin.Crypto.Default = 3
+Skin.Crypto.Pulp = 4
+Skin.Crypto.Cowboy = 5
+Skin.Crypto.Clown = 6
+Skin.Crypto.Darksiders = 7
+Skin.Crypto.Elvis = 8
+Skin.Crypto.ClownDark = 9
+Skin.Crypto.Xenowolf = 10
+Skin.Crypto.Krampus = 11
+Skin.Crypto.Camouflage1 = 12
+Skin.Crypto.Frozen = 13
+Skin.Crypto.24kt = 14
+Skin.Crypto.Camouflage2 = 15

@@ -1,0 +1,87 @@
+name: Build Third Eye Decalcified Co-op
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "padrouter/**"
+      - "mod/**"
+
+
+      - ".github/workflows/build-proxy.yml"
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - name: Check out this repo
+        uses: actions/checkout@v4
+
+      - name: Set up the Visual Studio compiler
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Compile (one DLL per XInput name, each with the real Windows numbering)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build | Out-Null
+          cl /nologo /c /O2 /EHsc /std:c++17 /MT /W3 padrouter\proxy.cpp /Fo:build\proxy.obj
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+          # Export numbers (ordinals) must match the real Windows DLLs: the game imports by number.
+          $ex = @{
+            GetState     = 'XInputGetState=Proxy_XInputGetState'
+            SetState     = 'XInputSetState=Proxy_XInputSetState'
+            Caps         = 'XInputGetCapabilities=Proxy_XInputGetCapabilities'
+            Enable       = 'XInputEnable=Proxy_XInputEnable'
+            DSound       = 'XInputGetDSoundAudioDeviceGuids=Proxy_XInputGetDSoundAudioDeviceGuids'
+            Battery      = 'XInputGetBatteryInformation=Proxy_XInputGetBatteryInformation'
+            Keystroke    = 'XInputGetKeystroke=Proxy_XInputGetKeystroke'
+            AudioIds     = 'XInputGetAudioDeviceIds=Proxy_XInputGetAudioDeviceIds'
+            StateEx      = 'XInputGetStateEx=Proxy_XInputGetStateEx'
+            WaitGuide    = 'XInputWaitForGuideButton=Proxy_XInputWaitForGuideButton'
+            CancelGuide  = 'XInputCancelGuideButtonWait=Proxy_XInputCancelGuideButtonWait'
+            PowerOff     = 'XInputPowerOffController=Proxy_XInputPowerOffController'
+          }
+          $hidden = @("$($ex.StateEx) @100 NONAME", "$($ex.WaitGuide) @101 NONAME", "$($ex.CancelGuide) @102 NONAME", "$($ex.PowerOff) @103 NONAME")
+          $defs = @{
+            'xinput1_3'   = @("$($ex.GetState) @2", "$($ex.SetState) @3", "$($ex.Caps) @4", "$($ex.Enable) @5",
+                              "$($ex.DSound) @6", "$($ex.Battery) @7", "$($ex.Keystroke) @8") + $hidden
+            'xinput1_4'   = @("$($ex.GetState) @2", "$($ex.SetState) @3", "$($ex.Caps) @4", "$($ex.Enable) @5",
+                              "$($ex.Battery) @7", "$($ex.Keystroke) @8", "$($ex.AudioIds) @10") + $hidden
+            'xinput9_1_0' = @("$($ex.Caps) @2", "$($ex.DSound) @3", "$($ex.GetState) @4", "$($ex.SetState) @5")
+          }
+          # Use MSVC's linker by full path (Git for Windows also ships an unrelated link.exe).
+          $linker = Join-Path $env:VCToolsInstallDir "bin\Hostx64\x64\link.exe"
+          foreach ($name in $defs.Keys) {
+            Set-Content "build\$name.def" (@("LIBRARY $name", "EXPORTS") + ($defs[$name] | ForEach-Object { "    $_" }))
+            & $linker /nologo /DLL build\proxy.obj "/DEF:build\$name.def" "/OUT:build\$name.dll" user32.lib
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
+
+      - name: Check the exports
+        shell: cmd
+        run: |
+          dumpbin /exports build\xinput1_3.dll
+          dumpbin /exports build\xinput1_4.dll
+          dumpbin /exports build\xinput9_1_0.dll
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $w = "out/Win64"
+          New-Item -ItemType Directory -Force "$w" | Out-Null
+          Copy-Item build/xinput1_3.dll "$w/xinput1_3.dll"
+          Copy-Item build/xinput1_4.dll "$w/xinput1_4.dll"
+          Copy-Item build/xinput9_1_0.dll "$w/xinput9_1_0.dll"
+          Copy-Item padrouter/DAHPadRouter.ini "$w/DAHPadRouter.ini"
+          Copy-Item -Recurse mod/ue4ss "$w/ue4ss"
+          Get-ChildItem -Recurse out | ForEach-Object { $_.FullName }
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ThirdEyeDecalcifiedCoop
+          path: out/

@@ -1,0 +1,6 @@
+build/
+out/
+*.log
+overkill_*_log*.txt
+overkill_coop_settings.txt
+dump_*.txt
