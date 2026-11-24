@@ -10,6 +10,9 @@ on:
 
       - ".github/workflows/build-proxy.yml"
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-2022
@@ -85,3 +88,21 @@ jobs:
         with:
           name: ThirdEyeDecalcifiedCoop
           path: out/
+
+      - name: Keep the built DLLs on the "builds" branch (so they can be fetched with git)
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        run: |
+          git config user.name "Third Eye Decalcified Co-op build"
+          git config user.email "thirdeye-coop@users.noreply.github.com"
+          New-Item -ItemType Directory -Force _builds | Out-Null
+          Copy-Item build/xinput1_3.dll, build/xinput1_4.dll, build/xinput9_1_0.dll, padrouter/DAHPadRouter.ini _builds/
+          Set-Content _builds/BUILT_FROM.txt "commit ${{ github.sha }}"
+          git checkout --orphan builds
+          git rm -rf --cached . | Out-Null
+          Get-ChildItem -Force | Where-Object { $_.Name -notin @('.git', '_builds') } | Remove-Item -Recurse -Force
+          Move-Item _builds/* .
+          Remove-Item _builds
+          git add -A
+          git commit -m "DLLs built from ${{ github.sha }}"
+          git push -f origin builds
