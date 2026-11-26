@@ -200,7 +200,9 @@ local CFG = {
     P2_ARC_DIM = 0.55,
     P2_BRACKET_SHARED = false,        -- (off: it turned Player 2's cyan bracket gold)
     P2_ARCS_FOLLOW_GAME = true,       -- the arcs go on what the game's PK is aimed at for Player 2 (what RB grabs), when it has one
-    CAM_WATCH_AUTO = true,            -- (test) once per session, 40 s after Player 2 joins: the DLL logs which game code reads Player 1's camera
+    CAM_WATCH_AUTO = false,           -- (test) once per session, 40 s after Player 2 joins: the DLL logs which game code reads Player 1's camera
+    RADAR_OWN_CENTER = true,          -- (test) each radar is updated around its own player (P1's followed P2)
+    RADAR_OWN_TURN = false,           -- (test, off) also turn each radar with its own player's camera
     TEST_RECORDER = true,             -- (test) remember the last 12 s of targeting; Guide button / Ctrl+F8 writes it to the log
     P2_TARGET_REPORT = false,         -- (test) log what the game and the mod pick for Player 2 every 2 s (Ctrl+F8 does it on demand)
     P2_BRACKET_NUDGE_X = 0,           -- Player 2's cyan lock-on bracket: screen nudge (pixels)
@@ -6453,6 +6455,7 @@ addTickJob("radarFeed", 0, function()
                 local mgr = subObj(radar, "m_pRadarManager")
                 -- with 3-4 players the small screens' radars keep a manager but stop updating: feed them all
                 if party and radarState[key] == nil then radarState[key] = "fed"; log("Radar %s: fed by the mod (3-4 players)", shortName(hud)) end
+                if CFG.RADAR_OWN_CENTER and radarState[key] ~= "fed" then radarState[key] = "fed" end
                 if radarState[key] == nil then
                     -- first look after the move: if the radar found its manager again by itself it is
                     -- connected and must not be fed (double updates make the threat card jump)
@@ -6465,7 +6468,24 @@ addTickJob("radarFeed", 0, function()
                         local okR, m = pcall(function() return gs:GetRadarManager() end)
                         if okR and valid(m) then pcall(function() radar.m_pRadarManager = m end); mgr = m end
                     end
-                    if mgr then pcall(function() radar:OnRadarObjectsUpdated(mgr) end) end
+                    if mgr then
+                        -- each radar is worked out around the game's "primary player": make that
+                        -- this radar's own player for the moment it is updated (both radars
+                        -- followed Player 2 before)
+                        local gs = CFG.RADAR_OWN_CENTER and FindFirstOf("GameStateBase") or nil
+                        local own = getPawn(pc)
+                        local was = nil
+                        if gs and valid(own) then
+                            pcall(function() was = gs.m_pLastKnownPrimaryPlayerPawn end)
+                            pcall(function() gs.m_pLastKnownPrimaryPlayerPawn = own end)
+                        end
+                        pcall(function() radar:OnRadarObjectsUpdated(mgr) end)
+                        if gs and valid(was) then pcall(function() gs.m_pLastKnownPrimaryPlayerPawn = was end) end
+                        if CFG.RADAR_OWN_TURN then
+                            local okR, r = pcall(function() return pc.PlayerCameraManager:GetCameraRotation() end)
+                            if okR and r then pcall(function() radar:UpdateOrientation(r.Yaw) end) end
+                        end
+                    end
                 end
             end
         end
@@ -9696,6 +9716,10 @@ state.populationReport = function()
 end
 
 state.radarReport = function()
+    pcall(function()
+        local gs = FindFirstOf("GameStateBase")
+        log("  game's primary player: %s", shortName(gs.m_pLastKnownPrimaryPlayerPawn))
+    end)
     for i, pc in ipairs({ player1Controller(), state.p2 }) do
         if valid(pc) then
             for _, hud in ipairs(hudWidgetsOf(pc)) do
