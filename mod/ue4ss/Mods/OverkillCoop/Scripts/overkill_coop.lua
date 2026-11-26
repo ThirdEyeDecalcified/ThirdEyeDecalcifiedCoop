@@ -8885,14 +8885,28 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
         local LINES = (PAGES[page] == "Controls" and HELP) or (PAGES[page] == "Welcome" and WELCOME)
             or (PAGES[page] == "Known issues" and ISSUES) or nil
         if LINES then
-            for i, h in ipairs(LINES) do
+            -- long lines are broken up here (by words) so they stay inside the menu
+            local function wrapText(str, max)
+                local out, cur = {}, ""
+                for word in str:gmatch("%S+") do
+                    if cur == "" then cur = word
+                    elseif #cur + 1 + #word <= max then cur = cur .. " " .. word
+                    else out[#out + 1] = cur; cur = "    " .. word end
+                end
+                if cur ~= "" then out[#out + 1] = cur end
+                return out
+            end
+            local n = 0
+            for _, h in ipairs(LINES) do
                 local col = h[2] and YE or { R = 0.8, G = 0.95, B = 1, A = 1 }
-                local t = text("DAH2P_TrainerHelp" .. i, h[1], h[2] and 16 or 13, col)
-                pcall(function() t:SetJustification(0) end)
-                pcall(function() t:SetAutoWrapText(true) end)
-                pcall(function() t.WrapTextAt = CFG.TRAINER_TEXT_WRAP or 900 end)
-                local okS, slot = pcall(function() return box:AddChildToVerticalBox(t) end)
-                if okS and slot and h[2] then pcall(function() slot:SetPadding({ Left = 0, Top = 10, Right = 0, Bottom = 2 }) end) end
+                local parts = h[2] and { h[1] } or wrapText(h[1], CFG.TRAINER_WRAP_CHARS or 92)
+                for pi2, part in ipairs(parts) do
+                    n = n + 1
+                    local t = text("DAH2P_TrainerHelp" .. n, part, h[2] and 16 or 13, col)
+                    pcall(function() t:SetJustification(0) end)
+                    local okS, slot = pcall(function() return box:AddChildToVerticalBox(t) end)
+                    if okS and slot and h[2] then pcall(function() slot:SetPadding({ Left = 0, Top = 10, Right = 0, Bottom = 2 }) end) end
+                end
             end
         end
         if not padMode then
@@ -9829,6 +9843,7 @@ end)()
 ------------------------------------------------------------------------------------------
 ;(function()
     local PAGE_PROJ, PAGE_UPG, PAGE_PLAYERS = 8, 9, 3
+    state.trainerExtras = state.trainerExtras or {}
     local add = function(e) state.trainerExtras[#state.trainerExtras + 1] = e end
     local function short(n) return (n or ""):match("([%w_%-]+)$") or n end
 
