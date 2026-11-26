@@ -7663,7 +7663,10 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
     end)
 
     -- Giant / tiny Crypto.
-    local SIZES = { { "Normal", 1.0 }, { "Tiny", 0.35 }, { "Small", 0.65 }, { "Big", 1.5 }, { "Giant (smashes buildings)", 4.0 } }
+    local SIZES = { { "Normal", 1.0 }, { "Smallest (bug-sized)", 0.1 }, { "Tiny", 0.35 }, { "Small", 0.65 }, { "Big", 1.5 },
+                    { "Giant (smashes buildings)", 4.0 }, { "Colossal (largest, smashes buildings)", 10.0 } }
+    local function isGiant(l) return l and (l:find("^Giant") or l:find("^Colossal")) ~= nil end
+    local function sizeOf(l) for _, e in ipairs(SIZES) do if e[1] == l then return e[2] end end return 1.0 end
     SIZE_NAMES = {}
     for _, e in ipairs(SIZES) do SIZE_NAMES[#SIZE_NAMES + 1] = e[1] end
     onWorldChange(function() state.sizeSpeed = {} end)
@@ -7676,7 +7679,9 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
         if who == 1 then state.trSize1 = label else state.trSize2 = label end
         local ok = pcall(function() pw:SetActorScale3D({ X = f, Y = f, Z = f }) end)
         -- giants move faster and see more (wider camera); everyone else normal
-        local giant = label:find("^Giant") ~= nil
+        local giant = isGiant(label)
+        -- speed goes with size: giants fast (more so the bigger), small ones slower
+        local speedMul = giant and CFG.GIANT_SPEED * math.sqrt(f / 4.0) or (f < 1 and math.max(0.3, math.sqrt(f)) or 1.0)
         local move = subObj(pw, "CharacterMovement")
         local pk = keyOf(pw) or "?"
         state.sizeSpeed = state.sizeSpeed or {}
@@ -7688,7 +7693,7 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
                 end
             end
             for f, base in pairs(state.sizeSpeed[pk]) do
-                if type(base) == "number" then pcall(function() move[f] = giant and base * CFG.GIANT_SPEED or base end) end
+                if type(base) == "number" then pcall(function() move[f] = base * speedMul end) end
             end
         end
         -- a giant walks through the saucer instead of getting stuck on it
@@ -7699,7 +7704,7 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
             end
         end
         local mesh = subObj(pw, "Mesh")
-        if mesh then pcall(function() mesh.GlobalAnimRateScale = giant and (1.0 / CFG.GIANT_SPEED) or 1.0 end) end
+        if mesh then pcall(function() mesh.GlobalAnimRateScale = giant and (1.0 / speedMul) or 1.0 end) end
         local cam = subObj(pc, "PlayerCameraManager")
         if cam then
             if giant then pcall(function() cam:SetFOV(CFG.GIANT_FOV) end) else pcall(function() cam:UnlockFOV() end) end
@@ -7916,16 +7921,17 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
     end
     addTickJob("trainerGiantSmash", 0.25, function()
         local who = {}
-        if state.trSize1 and state.trSize1:find("^Giant") then who[#who + 1] = player1Controller() end
-        if state.trSize2 and state.trSize2:find("^Giant") and valid(state.p2) then who[#who + 1] = state.p2 end
+        if isGiant(state.trSize1) then who[#who + 1] = player1Controller() end
+        if isGiant(state.trSize2) and valid(state.p2) then who[#who + 1] = state.p2 end
         if #who == 0 then return end
         local now = os.clock()
         for _, pc in ipairs(who) do
             local pw = getPawn(pc)
             local okL, loc = pcall(function() return pw:K2_GetActorLocation() end)
             if okL then
-                smashAround(pw, loc, 4.0)
-                smashProps(pw, loc, 350)
+                local sz = sizeOf(pc == player1Controller() and state.trSize1 or state.trSize2)
+                smashAround(pw, loc, sz)
+                smashProps(pw, loc, 350 * sz / 4.0)
                 for _, b in ipairs(buildingList()) do
                     if valid(b) then
                         local k = keyOf(b) or "?"
@@ -7939,7 +7945,8 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
                                 local dx = math.max(0, math.abs(loc.X - o.X) - e.X)
                                 local dy = math.max(0, math.abs(loc.Y - o.Y) - e.Y)
                                 local dz = math.max(0, math.abs(loc.Z - o.Z) - e.Z)
-                                if dx < 150 and dy < 150 and dz < 200 then
+                                local reach = 150 * math.max(1, sz / 4.0)
+                                if dx < reach and dy < reach and dz < 200 * math.max(1, sz / 4.0) then
                                     smashed[k] = now
                                     smash(pw, b)
                                 end
@@ -7950,6 +7957,96 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
             end
         end
     end)
+
+    -- Weapons wreck buildings on foot (like the saucer's do): every shot that ends next to a
+    -- building adds damage by what it was (a Quantum Deconstructor blast far more than a
+    -- Disintegrator bolt); a building collapses once it has taken enough for its size.
+    do
+        local POWER = { { "QuantumDecon", 120 }, { "SonicBoom", 70 }, { "DeathRay", 60 }, { "Ion", 40 }, { "Tank", 50 },
+                        { "SAM", 40 }, { "Rocket", 40 }, { "Missile", 40 }, { "Grenade", 25 }, { "Mortar", 35 },
+                        { "Disintegrator", 8 }, { "Probe", 3 } }
+        local function powerOf(n)
+            for _, e in ipairs(POWER) do if n:find(e[1]) then return e[2] end end
+            return 10
+        end
+        local live, hits = {}, {}
+        onWorldChange(function() live, hits = {}, {} end)
+        state.trainerExtras = state.trainerExtras or {}
+        state.trainerExtras[#state.trainerExtras + 1] = { key = "x_wreck", page = 4,
+            label = "TEST  Weapons wreck buildings on foot (by how strong the shot is)",
+            options = { "Off", "Players' shots", "Everyone's shots" },
+            get = function() return state.trWreck or "Off" end,
+            set = function(v) state.trWreck = v; log("Trainer: buildings wreckable on foot: %s", v) end }
+        addTickJob("footWreck", 0.1, function()
+            if not state.trWreck or state.trWreck == "Off" then return end
+            local p1, p2 = getPawn(player1Controller()), valid(state.p2) and getPawn(state.p2) or nil
+            local seenNow = {}
+            pcall(function()
+                local arr = {}
+                getStatics():GetAllActorsOfClass(getWorld(), StaticFindObject("/Script/BFGCore.BFGProjectile"), arr)
+                for _, a in ipairs(arr) do
+                    local v = a
+                    if type(a) == "userdata" and not valid(a) then pcall(function() v = a:get() end) end
+                    if valid(v) and not nameOf(v):find("Beam") then
+                        local k = keyOf(v)
+                        local okL, l = pcall(function() return v:K2_GetActorLocation() end)
+                        if k and okL and l then
+                            seenNow[k] = true
+                            local e = live[k]
+                            if not e then
+                                local okI, inst = pcall(function() return v:GetInstigator() end)
+                                local mine = okI and valid(inst) and ((valid(p1) and keyOf(inst) == keyOf(p1)) or (p2 and keyOf(inst) == keyOf(p2)))
+                                e = { n = shortName(v), mine = mine, by = mine and inst or p1 }
+                                live[k] = e
+                            end
+                            e.prev = e.at
+                            e.at = { X = l.X, Y = l.Y, Z = l.Z }
+                        end
+                    end
+                end
+            end)
+            -- shots that just ended: did they end at a building?
+            for k, e in pairs(live) do
+                if not seenNow[k] then
+                    live[k] = nil
+                    -- where it most likely ended: one more step along its last movement
+                    if e.at and e.prev then
+                        e.at = { X = e.at.X + (e.at.X - e.prev.X), Y = e.at.Y + (e.at.Y - e.prev.Y), Z = e.at.Z + (e.at.Z - e.prev.Z) }
+                    end
+                    if e.at and (e.mine or state.trWreck == "Everyone's shots") then
+                        for _, b in ipairs(buildingList()) do
+                            if valid(b) then
+                                local okB, o, ex = pcall(function()
+                                    local o_, e_ = {}, {}
+                                    b:GetActorBounds(true, o_, e_)
+                                    return o_, e_
+                                end)
+                                if okB and o and o.X and ex and ex.X then
+                                    local dx = math.max(0, math.abs(e.at.X - o.X) - ex.X)
+                                    local dy = math.max(0, math.abs(e.at.Y - o.Y) - ex.Y)
+                                    local dz = math.max(0, math.abs(e.at.Z - o.Z) - ex.Z)
+                                    if dx < 250 and dy < 250 and dz < 250 then
+                                        local bk = keyOf(b) or "?"
+                                        local size = math.max(ex.X, ex.Y, ex.Z)
+                                        local need = math.max(60, math.min(400, size / 10))
+                                        hits[bk] = (hits[bk] or 0) + powerOf(e.n)
+                                        if (state.wreckLogs or 0) < 10 then
+                                            state.wreckLogs = (state.wreckLogs or 0) + 1
+                                            log("Wreck: %s hit %s (%.0f / %.0f)", e.n, shortName(b), hits[bk], need)
+                                        end
+                                        if hits[bk] >= need then
+                                            hits[bk] = 0
+                                            pcall(smash, valid(e.by) and e.by or p1, b)
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end)
+    end
 
     -- Riot mode (experimental): every NPC is put on a different side (the game's m_faction),
     -- in turn, so the sides fight each other. Off puts everyone back.
@@ -10034,6 +10131,7 @@ end)()
                 pcall(function() o[1] = w.m_pCachedProjectileClass end)
                 pcall(function() o[2] = w.m_pCachedAlternateProjectileClass end)
                 pcall(function() o[3] = w.m_pCachedSecondAlternateProjectileClass end)
+                pcall(function() o.tri = w.m_pTrifusionChambers_ExtraBulletClass end)
                 o.soft = {}
                 for _, f in ipairs({ "m_ProjectileClass", "m_AlternateProjectileClass", "m_SecondAlternateProjectileClass" }) do
                     pcall(function() o.soft[f] = w[f].AssetPathName:ToString() end)
@@ -10043,6 +10141,7 @@ end)()
             pcall(function() w.m_pCachedProjectileClass = cls end)
             pcall(function() w.m_pCachedAlternateProjectileClass = cls end)
             pcall(function() w.m_pCachedSecondAlternateProjectileClass = cls end)
+            pcall(function() w.m_pTrifusionChambers_ExtraBulletClass = cls end)   -- the Disintegrator's 2 extra shots
             -- the upgraded extra shots are made from the gun's class paths: point those at it too
             local p = knownPath[want] or pathOf(cls)
             if p then
@@ -10054,6 +10153,7 @@ end)()
             local o = original[wk]
             for f, v in pairs(o.soft or {}) do pcall(function() w[f].AssetPathName = FName(v) end) end
             if o[1] then pcall(function() w.m_pCachedProjectileClass = o[1] end) end
+            if o.tri then pcall(function() w.m_pTrifusionChambers_ExtraBulletClass = o.tri end) end
             if o[2] then pcall(function() w.m_pCachedAlternateProjectileClass = o[2] end) end
             if o[3] then pcall(function() w.m_pCachedSecondAlternateProjectileClass = o[3] end) end
             original[wk] = nil
@@ -10171,6 +10271,8 @@ end)()
         pcall(function() b:SetOwner(w) end)
         pcall(function() b.Instigator = w.m_pHolder end)
         pcall(function() b:K2_AttachToActor(w, FName("None"), 1, 1, 1, false) end)
+        -- the Death Ray's charge-up never finishes on the Zap-O-Matic (red glow, no beam): no charge
+        pcall(function() b.m_fStartupDelay = 0 end)
         pcall(function() w.m_pBeam = b end)
         beamMade[wk] = b
         log("Zap beam: %s now uses %s", shortName(w), beamChoice)
