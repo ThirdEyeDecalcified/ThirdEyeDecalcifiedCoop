@@ -8862,7 +8862,9 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
         -- keep the picked row on screen
         local ck = menu.pad and menu.order[menu.cursor]
         local cb = ck and menu.bars and menu.bars[ck]
-        if cb and menu.scroll and valid(menu.scroll) then
+        if cb and menu.scroll and valid(menu.scroll) and menu.cursor == 1 then
+            pcall(function() menu.scroll:ScrollToStart() end)   -- back at the top: the page's text shows again
+        elseif cb and menu.scroll and valid(menu.scroll) then
             if not pcall(function() menu.scroll:ScrollWidgetIntoView(cb, false, 0, 40) end) then
                 pcall(function() menu.scroll:ScrollWidgetIntoView(cb, false, 0) end)
             end
@@ -8976,7 +8978,7 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
                         local sz, sc = lib:GetViewportSize(world), lib:GetViewportScale(world)
                         local vh = (sz.Y or 0) / ((type(sc) == "number" and sc > 0) and sc or 1)
                         if party then vh = vh / 2 end
-                        local fit = vh - (CFG.TRAINER_CHROME or 300) - (page == 1 and 280 or 0)
+                        local fit = vh - (CFG.TRAINER_CHROME or 300) - (page == 1 and (CFG.TRAINER_LOGO_SPACE or 170) or 0)
                         if fit > 250 then h = fit end
                     end)
                     pcall(function() sb:SetMaxDesiredHeight(h) end)
@@ -9144,7 +9146,11 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
                     n = n + 1
                     local t = text("DAH2P_TrainerHelp" .. n, part, h[2] and 16 or 13, col)
                     pcall(function() t:SetJustification(0) end)
-                    local okS, slot = pcall(function() return box:AddChildToVerticalBox(t) end)
+                    -- the Welcome page has rows under its text: the text goes in the scrolling
+                    -- list too, so the whole page scrolls (it ran off the bottom)
+                    local okS, slot
+                    if page == 1 then slot = addToList(t); okS = slot ~= nil
+                    else okS, slot = pcall(function() return box:AddChildToVerticalBox(t) end) end
                     if okS and slot and h[2] then pcall(function() slot:SetPadding({ Left = 0, Top = 10, Right = 0, Bottom = 2 }) end) end
                 end
             end

@@ -894,8 +894,8 @@ end
 local function hideGameMenuOf(pawn)
     local sel = subObj(pawn, "m_pWeaponAndAbilitySelection")
     local menu = sel and subObj(sel, "m_pMenu")
-    local want = CFG.MIND_WHEEL and CFG.HIDE_GAME_WHEEL ~= false and onFoot(pawn) or false
-    if menu then
+    local want = CFG.MIND_WHEEL and CFG.HIDE_GAME_WHEEL == true and onFoot(pawn) or false
+    if menu and (want or (state.gameMenuHidden and state.gameMenuHidden[OK.keyOf(menu)])) then
         local k = OK.keyOf(menu)
         state.gameMenuHidden = state.gameMenuHidden or {}
         -- set again each time it's in the viewport (the game may reset it when it opens)
@@ -913,7 +913,7 @@ if not state.gameMenuHook then
     state.gameMenuHook = true
     local okH = pcall(function()
         RegisterHook("/Game/Blueprints/UI/HUD/BPW_HUD_Base.BPW_HUD_Base_C:Event_OnSelectionMenuStateChanged", function(Context)
-            if not CFG.MIND_WHEEL then return end
+            if not (CFG.MIND_WHEEL and CFG.HIDE_GAME_WHEEL == true) then return end
             pcall(function()
                 local hud = Context:get()
                 local pawn = hud:GetOwningPlayerPawn()
@@ -4147,7 +4147,7 @@ local function quickSwap(i, pawn)
         if w and valid(cur) and OK.keyOf(w) == OK.keyOf(cur) then curWi = wi end
     end
     local p = P[i]
-    local want = p.prevWi
+    local want = (CFG.LB_TAP_MODE == "previous") and p.prevWi or nil
     if not (want and want ~= curWi and findWeapon(list, WEAPONS[want])) then
         want = nil
         for step = 1, #WEAPONS do
@@ -4155,9 +4155,79 @@ local function quickSwap(i, pawn)
             if wi ~= curWi and findWeapon(list, WEAPONS[wi]) then want = wi break end
         end
     end
-    wlog("P%d LB tap: quick swap to %s", i, want and WEAPONS[want].label or "nothing (no other weapon found)")
+    wlog("P%d LB tap: next weapon %s", i, want and WEAPONS[want].label or "nothing (no other weapon found)")
     if want then equip(i, pawn, want) end
 end
+
+-- LB belongs to the mod: while the mod's wheel is on and everyone is on foot, every game
+-- action on LB (its weapon wheel, its next-weapon) is taken out of the game's button list,
+-- so the game's wheel can never open. The mod still reads LB straight from the pad: a quick
+-- press cycles weapons, holding opens the mod's wheel. In a saucer, or with the wheel
+-- switched off in the trainer, LB is given back to the game. Swaps only happen with LB up
+-- on every pad, so the game never sees half a press. Nothing is saved to disk.
+;(function()
+local lbGate = { removed = nil, noneLogged = false }
+local LB_KEY = "Gamepad_LeftShoulder"
+local function inputSettings()
+    local s0 = StaticFindObject("/Script/Engine.Default__InputSettings")
+    return valid(s0) and s0 or nil
+end
+local function lbCollect(s0)
+    local found = {}
+    local ok = pcall(function()
+        s0.ActionMappings:ForEach(function(_, elem)
+            local m = elem:get()
+            if m.Key.KeyName:ToString() == LB_KEY then
+                found[#found + 1] = { ActionName = FName(m.ActionName:ToString()), bShift = m.bShift, bCtrl = m.bCtrl,
+                    bAlt = m.bAlt, bCmd = m.bCmd, Key = { KeyName = FName(LB_KEY) } }
+            end
+        end)
+    end)
+    return ok and found or nil
+end
+local function lbSetTaken(take)
+    local s0 = inputSettings()
+    if not s0 then return end
+    if take then
+        local list = lbCollect(s0)
+        if not list then return end
+        local names = {}
+        for k, m in ipairs(list) do
+            pcall(function() s0:RemoveActionMapping(m, k == #list) end)
+            names[#names + 1] = m.ActionName:ToString()
+        end
+        lbGate.removed = list
+        if #list == 0 and not lbGate.noneLogged then
+            lbGate.noneLogged = true
+            wlog("LB: the game has no button-list actions on LB (its wheel is read some other way); closing it instead")
+        elseif #list > 0 then
+            wlog("LB taken from the game (%s): its wheel can't open now", table.concat(names, ", "))
+        end
+    else
+        local list = lbGate.removed or {}
+        for k, m in ipairs(list) do pcall(function() s0:AddActionMapping(m, k == #list) end) end
+        lbGate.removed = nil
+        if #list > 0 then wlog("LB given back to the game") end
+    end
+end
+state.lbGiveBack = function() if lbGate.removed then lbSetTaken(false) end end
+local function lbGateTick()
+    local pawns, anyDown, allFoot = 0, false, true
+    for _, pc in ipairs(controllers()) do
+        local pw = getPawn(pc)
+        if valid(pw) then
+            pawns = pawns + 1
+            if not onFoot(pw) then allFoot = false end
+        end
+        if valid(pc) and kbDown(pc, LB_KEY) then anyDown = true end
+    end
+    if pawns == 0 then return end                       -- loading: leave it as it is
+    local want = CFG.MIND_WHEEL and CFG.LB_TAKE_FROM_GAME ~= false and allFoot or false
+    if want == (lbGate.removed ~= nil) or anyDown then return end
+    lbSetTaken(want)
+end
+OK.addTickJob("lbGate", 0.0, function() pcall(lbGateTick) end)
+end)()
 
 OK.addTickJob("mindWheel", 0.0, function()
     if not CFG.MIND_WHEEL then
