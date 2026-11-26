@@ -139,7 +139,11 @@ local CFG = {
     P2_LOCK_RANGE = 3500,             -- how far (cm) Player 2's yellow lock-on reaches
     P2_LOCK_COS = 0.975,              -- how close to the crosshair a target must be (0.975 = about 13 degrees)
     P2_LOCK_REAL = false,             -- (test: off) the mod no longer writes Player 2's lock into the game
-    P2_GUN_FOLLOW_GAME = true,        -- Player 2's cyan bracket uses the game's own lock when it has one
+    P2_GUN_FOLLOW_GAME = true,
+    P2_MOD_GUN_LOCK = false,          -- (off) the mod's own gun lock for Player 2 when the game has none (it made the ghost targets)
+    SPLIT_LOD_PROFILE = true,         -- two players: keep detail further out (each half-screen view is smaller, so the game drops detail sooner)
+    SPLIT_LOD_COMMANDS = { "r.StaticMeshLODDistanceScale 0.6", "r.SkeletalMeshLODBias -1", "r.ViewDistanceScale 1.6", "foliage.LODDistanceScale 1.6" },
+    SPLIT_LOD_RESET = { "r.StaticMeshLODDistanceScale 1", "r.SkeletalMeshLODBias 0", "r.ViewDistanceScale 1", "foliage.LODDistanceScale 1" },        -- Player 2's cyan bracket uses the game's own lock when it has one
     P2_PK_AIM_WIDEN = 2.0,
     P2_PK_GAP_HOLD = 0.6,             -- Player 2's arcs bridge the game's short PK-aim drop-outs (seconds)            -- Player 2's PK reach to the sides (the game's auto-target area x this)
     P2_TARGET_HEALTH = true,          -- Player 2 sees the health bar of what its gun is locked on to
@@ -3818,6 +3822,23 @@ state.snapshot = function(why)
     log("===== SNAPSHOT %d (%s): the last 12 seconds, oldest first =====", state.snapN, why or "?")
     local now = os.clock()
     for _, e in ipairs(state.recBuf) do log("  -%4.1fs  %s", now - e.t, e.s) end
+    pcall(function()
+        for _, w in ipairs(FindAllOf("UserWidget") or {}) do
+            if valid(w) then
+                local n = shortName(w)
+                if n:find("Crosshair") and not n:find("^Default__") then
+                    local okV, vis = pcall(function() return w:IsVisible() end)
+                    local okO, own = pcall(function() return w:GetOwningPlayer() end)
+                    local okP, op = pcall(function() return w:GetRenderOpacity() end)
+                    local okI, inV = pcall(function() return w:IsInViewport() end)
+                    if okV and vis and (not okP or op > 0.01) then
+                        log("  crosshair %s: owner %s, opacity %.2f, on screen %s", n, (okO and valid(own)) and shortName(own) or "-",
+                            okP and op or -1, tostring(okI and inV))
+                    end
+                end
+            end
+        end
+    end)
     log("===== end of snapshot %d =====", state.snapN)
 end
 -- things the lock-ons must never pick: the players' saucer (its landing light), any player
@@ -3825,17 +3846,49 @@ state.notTargetable = function(a)
     local n = nameOf(a) or ""
     return n:find("PlayerUFO") ~= nil or n:find("BP_CharacterPlayer") ~= nil
 end
+-- The chest bone of a skeleton (found by name once per skeleton; it follows a ragdoll, so
+-- the marks stay on a body lying on the ground)
+state.boneCache = {}
+state.bodyBoneOf = function(mesh)
+    local okM, sk = pcall(function() return mesh.SkeletalMesh end)
+    local key = (okM and valid(sk)) and nameOf(sk) or nil
+    if not key then return nil end
+    local hit = state.boneCache[key]
+    if hit ~= nil then return hit or nil end
+    local names = {}
+    pcall(function()
+        local n = mesh:GetNumBones()
+        for i = 0, math.min(n - 1, 80) do
+            local okB, b = pcall(function() return mesh:GetBoneName(i) end)
+            if okB and b then names[#names + 1] = { n = b:ToString(), f = b } end
+        end
+    end)
+    local pick = nil
+    for _, want in ipairs({ "spine_03", "spine_02", "spine2", "spine_01", "spine1", "spine", "pelvis", "hips", "hip" }) do
+        for _, e in ipairs(names) do
+            if e.n:lower() == want then pick = e.f break end
+        end
+        if pick then break end
+    end
+    if not pick then
+        for _, e in ipairs(names) do if e.n:lower():find("spine") then pick = e.f break end end
+    end
+    state.boneCache[key] = pick or false
+    if (state.boneLogs or 0) < 8 then
+        state.boneLogs = (state.boneLogs or 0) + 1
+        log("Lock-on point for %s: %s (of %d bones)", shortName(sk), pick and pick:ToString() or "none, using the middle", #names)
+    end
+    return pick
+end
 state.targetPoint = function(c)
     -- (a missing bone gives back the mesh's origin, the feet: that's why Player 2's lock-ons
     -- sat low. Only use a bone the mesh really has.)
     local mesh = subObj(c, "Mesh")
     if mesh then
-        for _, bone in ipairs({ "spine_03", "spine_02", "Spine2", "Spine1" }) do
-            local okE, has = pcall(function() return mesh:DoesSocketExist(FName(bone)) end)
-            if okE and has then
-                local ok, p = pcall(function() return mesh:GetSocketLocation(FName(bone)) end)
-                if ok and p and type(p.X) == "number" then return { X = p.X, Y = p.Y, Z = p.Z } end
-            end
+        local bone = state.bodyBoneOf(mesh)
+        if bone then
+            local ok, p = pcall(function() return mesh:GetSocketLocation(bone) end)
+            if ok and p and type(p.X) == "number" then return { X = p.X, Y = p.Y, Z = p.Z } end
         end
     end
     -- the middle of its bounds (people: about the chest; cars and props: their middle)
@@ -5413,7 +5466,7 @@ do
             state.p2GameGun = g
         end
         -- the gun's lock: Player 2's own target (homing shots use it) when the game has none
-        if not isZapGun and valid(state.p2Lock) and not state.p2GameGun then
+        if CFG.P2_MOD_GUN_LOCK and not isZapGun and valid(state.p2Lock) and not state.p2GameGun then
             local t = state.p2Lock
             pcall(function()
                 local arr = w.m_apCurrentLockedTargets
@@ -5458,7 +5511,7 @@ do
             log("Player 2 lock-on bracket: own copy made (%s, for %s)", shortName(c), shortName(w))
         end
         pcall(function() copy.m_pWeapon = w end)
-        local tgt = (CFG.P2_GUN_FOLLOW_GAME and state.p2GameGun) or state.p2Lock
+        local tgt = (CFG.P2_GUN_FOLLOW_GAME and state.p2GameGun) or (CFG.P2_MOD_GUN_LOCK and state.p2Lock) or nil
         state.p2BracketOn = tgt
         local x, y, sc, op = nil, nil, 0.95, 0.25
         if valid(tgt) then
@@ -9351,5 +9404,21 @@ end)()
         elseif curComp and valid(curComp) then
             pcall(function() curComp:SetVisibility(true, false) end)
         end
+    end)
+end)()
+
+-- Two players: a detail profile for the smaller half-screen views (on join, off on leave)
+;(function()
+    local on = false
+    local function set(want)
+        if want == on then return end
+        on = want
+        for _, c in ipairs(want and CFG.SPLIT_LOD_COMMANDS or CFG.SPLIT_LOD_RESET) do runConsole(c) end
+        log("Split-screen detail profile: %s", want and "on" or "off")
+    end
+    state.onP2Leave(function() set(false) end)
+    addTickJob("splitLod", 2.0, function()
+        if state.lodForced then return end   -- Ctrl+F3's forced LOD wins
+        set(CFG.SPLIT_LOD_PROFILE and valid(state.p2) or false)
     end)
 end)()

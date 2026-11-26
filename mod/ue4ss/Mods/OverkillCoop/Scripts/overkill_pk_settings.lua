@@ -71,6 +71,9 @@ Config.Push = {
     Speed = 900.0,         -- cm per second while L3/R3 is held
     TapStep = 300.0,       -- extra cm applied on the press itself, so taps feel responsive
     MinDistance = 250.0,
+    SizedMinDistance = true,  -- things can come in as close as their own size allows (never into Crypto)
+    MinDistanceFloor = 70.0,  -- ...but never closer than this
+    MinDistanceGap = 45.0,    -- ...and this much air between the thing's edge and Crypto's middle
     MinDistancePeople = 90.0, -- people can be pulled right up to Crypto (about three feet)   -- closest the object can come to Crypto
     MaxDistance = 3500.0,  -- furthest it can be pushed
     -- Fallback when no hold-distance property exists: nudge the object's

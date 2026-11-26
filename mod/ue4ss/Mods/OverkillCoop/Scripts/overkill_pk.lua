@@ -729,6 +729,22 @@ local function pushPull(pk, target, dir, justPressed, dt, camFwd)
             local step = dir * P.Speed * dt
             if justPressed then step = step + dir * P.TapStep end
             local minD = isPawn(target) and (P.MinDistancePeople or P.MinDistance) or P.MinDistance
+            -- as close as the thing's own size allows without touching Crypto
+            if P.SizedMinDistance then
+                local key = tostring(target:GetAddress())
+                if State.minDKey ~= key then
+                    State.minDKey, State.minDSized = key, nil
+                    pcall(function()
+                        local o, e = {}, {}
+                        target:GetActorBounds(true, o, e)
+                        if type(e.X) == "number" then
+                            local r = math.sqrt(e.X * e.X + e.Y * e.Y)
+                            State.minDSized = math.max(P.MinDistanceFloor or 70, r + (P.MinDistanceGap or 45))
+                        end
+                    end)
+                end
+                if State.minDSized then minD = math.min(minD, State.minDSized) end
+            end
             local nd = clamp(d + step, minD, P.MaxDistance)
             if nd ~= d then trySet(holder, distName, nd); dbg(string.format("Distance %.0f", nd)) end
             if not P.AlsoNudge then return nd end
