@@ -147,13 +147,16 @@ local CFG = {
     SPLIT_LOD_COMMANDS = { "r.StaticMeshLODDistanceScale 0.6", "r.SkeletalMeshLODBias -1", "r.ViewDistanceScale 1.6", "foliage.LODDistanceScale 1.6" },
     SPLIT_LOD_RESET = { "r.StaticMeshLODDistanceScale 1", "r.SkeletalMeshLODBias 0", "r.ViewDistanceScale 1", "foliage.LODDistanceScale 1" },        -- Player 2's cyan bracket uses the game's own lock when it has one
     P2_PK_AIM_WIDEN = 2.0,
-    P2_PK_GAP_HOLD = 0.6,
+    P2_PK_GAP_HOLD = 0.25,
     PK_CROWD_PER_PLAYER = true,       -- (test, from Clone Carnage) the traffic/crowd system is told whose PK is holding something (it only knew Player 1's)
     P2_ZAP_NO_PROPS = true,           -- (test) Player 2's Zap-O-Matic doesn't take the PK target when that's a prop (it shot at far PK objects)             -- Player 2's arcs bridge the game's short PK-aim drop-outs (seconds)            -- Player 2's PK reach to the sides (the game's auto-target area x this)
     P2_TARGET_HEALTH = true,          -- Player 2 sees the health bar of what its gun is locked on to
     P2_ZAP_CHAIN = true,              -- the mod's zap chain for Player 2 (tested: the game alone doesn't chain for Player 2)
     P2_ZAP_BRACKET = true,
     P2_ZAP_ARCS = true,               -- draw the arcs of Player 2's zap chain with the game's beam effect            -- Player 2's cyan Zap-O-Matic bracket placed from Player 2's own view              -- Player 2's Zap-O-Matic arcs to the people next to its target
+    P2_ZAP_TRUE_CHAIN = true,         -- jumps go person to person (from the last one hit), like the game's, not all from the first
+    P2_ZAP_JUMP_EVERY = 0.4,          -- each extra jump joins after zapping the same person this much longer (seconds)
+    P2_ZAP_SIDE_LIMIT = 0.2,          -- Player 2's zap won't take a shared (PK) target further to the side than this part of Player 2's view
     P2_ZAP_CHAIN_MAX = 3,             -- targets in Player 2's chain (main one included)
     P2_ZAP_CHAIN_RANGE = 900,
     P2_ZAP_CHAIN_DPS = 25,            -- arc damage per second if the main target's own loss can't be measured
@@ -5222,8 +5225,30 @@ do
                 end
             end
         end)
-        table.sort(cands, function(a, b) return a[2] < b[2] end)
-        for i = 1, math.min(#cands, maxExtra) do list[#list + 1] = cands[i][1] end
+        if not CFG.P2_ZAP_TRUE_CHAIN then
+            table.sort(cands, function(a, b) return a[2] < b[2] end)
+            for i = 1, math.min(#cands, maxExtra) do list[#list + 1] = cands[i][1] end
+            return list
+        end
+        -- each jump goes from the last one hit to the nearest new person within reach of it
+        local used, from = {}, at
+        for _ = 1, maxExtra do
+            local best, bd = nil, nil
+            for _, c in ipairs(cands) do
+                local k = keyOf(c[1])
+                if not used[k] then
+                    local l = state.targetPoint(c[1])
+                    if l then
+                        local d = math.sqrt((l.X - from.X) ^ 2 + (l.Y - from.Y) ^ 2 + (l.Z - from.Z) ^ 2)
+                        if d < range and (not bd or d < bd) then best, bd = c[1], d end
+                    end
+                end
+            end
+            if not best then break end
+            used[keyOf(best)] = true
+            list[#list + 1] = best
+            from = state.targetPoint(best) or from
+        end
         return list
     end
     local watchLines, lastWatch = 0, {}
@@ -5385,6 +5410,9 @@ do
             log("P2 zap chain settings: %d jump(s), reach %.0f cm, %.0f%% damage per jump", zap.cfg.n, zap.cfg.range, zap.cfg.mult * 100)
         end
         local chain = chainFrom(tgt, zap.cfg)
+        if zap.mainKey ~= keyOf(tgt) then zap.mainKey, zap.mainSince = keyOf(tgt), now end
+        local allowed = math.floor((now - (zap.mainSince or now)) / CFG.P2_ZAP_JUMP_EVERY)
+        while #chain > 1 + allowed do table.remove(chain) end
         zap.links = chain
         local pw = getPawn(state.p2)
         local dt = zap.dt or StaticFindObject("/Script/Engine.DamageType")
@@ -9538,7 +9566,22 @@ end)()
         if not (okA and valid(t)) then return end
         charCls = charCls or StaticFindObject("/Script/Engine.Character")
         local okC, isChar = pcall(function() return t:IsA(charCls) end)
-        if okC and not isChar then
+        -- (PK reaches further to the sides for Player 2; the zap shouldn't follow it out there)
+        local tooWide = false
+        pcall(function()
+            local loc = state.targetPoint(t)
+            local cm = state.p2.PlayerCameraManager
+            local c, r = cm:GetCameraLocation(), cm:GetCameraRotation()
+            local yaw, pitch = math.rad(r.Yaw), math.rad(r.Pitch)
+            local far = { X = c.X + math.cos(pitch) * math.cos(yaw) * 5000, Y = c.Y + math.cos(pitch) * math.sin(yaw) * 5000, Z = c.Z + math.sin(pitch) * 5000 }
+            local mid, tp = {}, {}
+            if state.p2:ProjectWorldLocationToScreen(far, mid, true) and state.p2:ProjectWorldLocationToScreen(loc, tp, true) and mid.X > 0 then
+                local cx, cy = mid.X, mid.Y * (1 + CFG.P2_CROSSHAIR_RAISE)
+                local dx, dy = (tp.X - cx) / (2 * mid.X), (tp.Y - cy) / (2 * mid.X)
+                tooWide = math.sqrt(dx * dx + dy * dy) > CFG.P2_ZAP_SIDE_LIMIT
+            end
+        end)
+        if (okC and not isChar) or tooWide then
             pcall(function() mental.m_pCurrentAimTarget = nil end)
             if not state.zapPropLogged then state.zapPropLogged = true; log("P2 zap: ignored a prop as the shared aim target (%s)", shortName(t)) end
         end

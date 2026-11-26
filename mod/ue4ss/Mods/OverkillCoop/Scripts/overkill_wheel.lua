@@ -3672,6 +3672,7 @@ local function quickSwap(i, pawn)
             if wi ~= curWi and findWeapon(list, WEAPONS[wi]) then want = wi break end
         end
     end
+    wlog("P%d LB tap: quick swap to %s", i, want and WEAPONS[want].label or "nothing (no other weapon found)")
     if want then equip(i, pawn, want) end
 end
 
@@ -3691,13 +3692,15 @@ OK.addTickJob("mindWheel", 0.0, function()
             end
         end
         local pkBusy = state.pkHolding and state.pkHolding[i]
-        local tapT = CFG.LB_TAP_TIME or 0.22
+        local tapT = CFG.LB_TAP_TIME or 0.25
         if lb then
             p.lbDownAt = p.lbDownAt or os.clock()
+            if not p.lbPressAt then p.lbPressAt, p.lbPicked = os.clock(), false end
         else
             if p.lbDownAt and not p.overlay and not p.inputOff and os.clock() - p.lbDownAt < tapT
                and onFoot(pawn) and not state.trainerOpen and not pkBusy then
                 quickSwap(i, pawn)
+                p.lbPressAt = nil
             end
             p.lbDownAt = nil
         end
@@ -3735,7 +3738,7 @@ OK.addTickJob("mindWheel", 0.0, function()
                 if p.overlay and not p.logged then p.logged = true; wlog("P%d's wheel works", i) end
             end
             for wi, e in ipairs(WEAPONS) do
-                if edge(p, pc, e.key) then p.pending = wi end
+                if edge(p, pc, e.key) then p.pending = wi; p.lbPicked = true end
             end
             local sel = p.sel or 1
             local r, c = (sel - 1) // 4, (sel - 1) % 4
@@ -3746,6 +3749,7 @@ OK.addTickJob("mindWheel", 0.0, function()
             local newSel = r * 4 + c + 1
             if newSel > #POWERS then newSel = #POWERS end  -- the grid's last square can be empty
             if newSel ~= sel then
+                p.lbPicked = true
                 p.sel = newSel
                 -- only ready powers become the LT power; the rest are just shown
                 if POWERS[newSel].ready then p.power = newSel end
@@ -3779,6 +3783,11 @@ OK.addTickJob("mindWheel", 0.0, function()
             end
             local wi = p.pending
             p.pending = nil
+            -- a short press that only flashed the wheel open (nothing picked): still a quick swap
+            if not wi and not p.lbPicked and p.lbPressAt and os.clock() - p.lbPressAt < (CFG.LB_TAP_MAX or 0.5) and onFoot(pawn) then
+                OK.later(0.15, "wheelQuickSwap", function() quickSwap(i, pawn) end)
+            end
+            p.lbPressAt = nil
             if wi and onFoot(pawn) then
                 -- after the game has closed its own (hidden) wheel, so it doesn't undo the switch
                 OK.later(0.15, "wheelEquip", function() equip(i, pawn, wi) end)
