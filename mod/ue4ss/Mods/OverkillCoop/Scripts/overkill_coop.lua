@@ -201,6 +201,7 @@ local CFG = {
     P2_BRACKET_SHARED = false,        -- (off: it turned Player 2's cyan bracket gold)
     P2_ARCS_FOLLOW_GAME = true,       -- the arcs go on what the game's PK is aimed at for Player 2 (what RB grabs), when it has one
     CAM_WATCH_AUTO = false,           -- (test) once per session, 40 s after Player 2 joins: the DLL logs which game code reads Player 1's camera
+    KEEP_PRIMARY_P1 = true,           -- keep the game's primary player on Player 1 (it moved to Player 2 after P1's jetpack: both radars followed P2)
     RADAR_OWN_CENTER = true,          -- (test) each radar is updated around its own player (P1's followed P2)
     RADAR_OWN_TURN = false,           -- (test, off) also turn each radar with its own player's camera
     TEST_RECORDER = true,             -- (test) remember the last 12 s of targeting; Guide button / Ctrl+F8 writes it to the log
@@ -4233,6 +4234,7 @@ local function goDown(slot)
         pcall(state.trainerOnDown)
     end
     setFrozen(pawn, pc, true)
+    if slot == 1 then state.p1Down = true end
     setTargetable(pawn, false)
     pcall(state.dsRagdoll, pawn, true, entry)
     local okO, w, text = pcall(overlayFor, pc, CFG.DOWNED_BLACKOUT, 2)
@@ -4256,6 +4258,7 @@ local function getUp(slot, revived)
         if buddy then state.dsMoveNextTo(pawn, pawns[buddy], (slot % 2 == 0) and 200 or -200) end
     end
     setFrozen(pawn, pc, false)
+    if slot == 1 then state.p1Down = false end
     fillStat(stat(pawn, "m_pHealthStat"), 1.0)
     fillStat(stat(pawn, "m_pShieldStat"), CFG.RESPAWN_SHIELD)
     setTargetable(pawn, true)
@@ -9782,4 +9785,23 @@ end
         if os.clock() - armedAt > 40 then state.camWatchDone = true; start(6) end
     end)
     if Key.F7 ~= nil then RegisterKeyBind(Key.F7, { ModifierKey.CONTROL }, function() start(6) end) end
+end)()
+
+-- The game's "primary player" must stay Player 1 (radars, and other game systems, are worked
+-- out around it). The game itself sometimes hands it to Player 2 (seen after Player 1 used the
+-- jetpack); put it back, except while Player 1 is down (then Player 2 stands in on purpose).
+;(function()
+    local fixes = 0
+    addTickJob("keepPrimaryP1", 0.25, function()
+        if not (CFG.KEEP_PRIMARY_P1 and valid(state.p2)) or state.p1Down then return end
+        local gs = FindFirstOf("GameStateBase")
+        local p1 = getPawn(player1Controller())
+        if not (valid(gs) and valid(p1)) then return end
+        local okC, cur = pcall(function() return gs.m_pLastKnownPrimaryPlayerPawn end)
+        if okC and valid(cur) and keyOf(cur) ~= keyOf(p1) then
+            pcall(function() gs.m_pLastKnownPrimaryPlayerPawn = p1 end)
+            fixes = fixes + 1
+            if fixes <= 5 then log("Primary player was %s: set back to Player 1", shortName(cur)) end
+        end
+    end)
 end)()
