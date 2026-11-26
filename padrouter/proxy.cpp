@@ -2149,6 +2149,28 @@ static DWORD WINAPI Worker(LPVOID)
 
         probe.Update();
 
+        // Xbox Guide button on any pad: ask the Lua mod for a text snapshot (it dumps the last
+        // few seconds of what each player was targeting). Only the hidden GetStateEx reports it.
+        if (g_Real.GetStateEx)
+        {
+            static bool guideWas[4] = {};
+            for (DWORD i = 0; i < 4; ++i)
+            {
+                XINPUT_STATE st{};
+                const bool down = g_Real.GetStateEx(i, &st) == ERROR_SUCCESS && (st.Gamepad.wButtons & 0x0400) != 0;
+                if (down && !guideWas[i])
+                {
+                    const std::wstring paths[] = {L"padrouter_snapshot_request.txt", g_ExeDir + L"\\ue4ss\\padrouter_snapshot_request.txt"};
+                    for (const auto& path : paths)
+                    {
+                        if (FILE* f = _wfopen(path.c_str(), L"a")) { std::fprintf(f, "snapshot%lu\n", i + 1); std::fclose(f); break; }
+                    }
+                    Log("Guide button on pad %lu: snapshot requested", i + 1);
+                }
+                guideWas[i] = down;
+            }
+        }
+
         // Pass a "spawn Player 2" request to the DAH2P Lua mod (it polls for this file).
         static ULONGLONG lastSpawnRequest = 0;
         if (g_SpawnRequested.exchange(false) && now - lastSpawnRequest > 3000)

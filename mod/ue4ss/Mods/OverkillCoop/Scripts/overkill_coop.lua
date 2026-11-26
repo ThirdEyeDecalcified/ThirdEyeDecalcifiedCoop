@@ -146,16 +146,16 @@ local CFG = {
     P2_ZAP_CHAIN_MAX = 3,             -- targets in Player 2's chain (main one included)
     P2_ZAP_CHAIN_RANGE = 900,
     P2_ZAP_CHAIN_DPS = 25,            -- arc damage per second if the main target's own loss can't be measured
-    P2_YELLOW_ONLY_HOVERED = true,    -- Player 2's yellow arcs only on what PK has under the crosshair (a sure grab)
+    P2_YELLOW_ONLY_HOVERED = false,   -- off again (with it on, P2 hardly ever got arcs): arcs on PK's hovered thing, else the nearest target, like before
     P2_YELLOW_ONLY_PKABLE = true,     -- Player 2's yellow arcs only on things PK can really pick up
     P2_PK_RANGE = 3000,               -- most PK reach (cm) for Player 2's yellow arcs (the game's own reach is used if shorter)
     P2_ZAP_LOCK_RANGE = 1600,
     P2_WEAPON_LOCK_RANGE = 3000,      -- Player 2's lock reach (cm) for the other guns that lock on         -- Player 2's Zap-O-Matic lock reach (cm; the beam's length)
     P2_VIEW_ASPECT_H = 0.837,         -- height / width of Player 2's half of the screen
-    P2_PK_AIM_ASSIST = true,          -- Player 2's PK grabs the yellow target (aim is turned onto it as RB goes down)
+    P2_PK_AIM_ASSIST = false,         -- Player 2's PK grabs the yellow target (aim is turned onto it as RB goes down)
     P2_PK_AIM_ASSIST_TIME = 0.5,      -- for how long after RB goes down (seconds)
-    P2_PK_AIM_ASSIST_SMOOTH = 0.35,
-    P2_PK_CAMERA_ASSIST = false,      -- old way (turns the camera); off: only the aim point moves
+    P2_PK_AIM_ASSIST_SMOOTH = 0.5,
+    P2_PK_CAMERA_ASSIST = false,      -- RB pulls Player 2's aim onto the arcs for a moment (the aim-point-only way didn't make PK grab)
     P2_PK_AIM_RAISE_COMP = true,      -- allow for the crosshair sitting above the aim point   -- share of the way to the target the aim moves each frame (lower = smoother)
     P2_CROSSHAIR_RAISE = -0.3,        -- the crosshair sits this far above the middle of the view (the game's m_fCrosshairOffsetY)
     P2_PK_USES_LOCK = false,          -- (off: setting PK's grab target crashed the game)
@@ -181,6 +181,16 @@ local CFG = {
     MARKER_SIZE = 22,
     MARKER_USE_GAME_WIDGET = true,    -- use the game's own yellow marker look (falls back to a diamond)
     MARKER_HEIGHT = 120,
+    P2_ARC_RAISE = 0,                 -- Player 2's yellow arcs: how far above the target's chest (game units)
+    P2_ARC_NUDGE_X = 0,               -- ...and a screen nudge for the arcs picture (pixels)
+    P2_ARC_NUDGE_Y = 0,
+    P2_ARC_DIM = 0.55,
+    P2_BRACKET_SHARED = false,        -- (off: it turned Player 2's cyan bracket gold)
+    P2_ARCS_FOLLOW_GAME = true,       -- the arcs go on what the game's PK is aimed at for Player 2 (what RB grabs), when it has one
+    TEST_RECORDER = true,             -- (test) remember the last 12 s of targeting; Guide button / Ctrl+F8 writes it to the log
+    P2_TARGET_REPORT = false,         -- (test) log what the game and the mod pick for Player 2 every 2 s (Ctrl+F8 does it on demand)
+    P2_BRACKET_NUDGE_X = 0,           -- Player 2's cyan lock-on bracket: screen nudge (pixels)
+    P2_BRACKET_NUDGE_Y = 0,                -- arcs opacity while PK can't grab the target yet (1 when it can)
     BRACKET_HEIGHT = 20,              -- the lock-on bracket sits on the target's middle              -- how far above the target's middle (game units)
     OWN_HUD_SHIELD = false,           -- (old) drive each HUD's own shield bar (the game keeps overriding it)
     PLAYER_BARS = true,               -- split screen: each player gets their own hexagon shield bar by the split line
@@ -3797,14 +3807,46 @@ state.p2PKRange = function()
 end
 -- Where a person or body really is: the middle of its body (a body lying on the ground has
 -- moved away from where its standing capsule was)
+-- Test recorder: every quarter second, what each player is targeting (only kept when it
+-- changes, last 12 s, in memory). A snapshot writes it to the log, so a split-second problem
+-- is still caught a few seconds after it happened. Text only: cheap to read.
+state.recBuf = {}
+state.snapshot = function(why)
+    state.snapN = (state.snapN or 0) + 1
+    log("===== SNAPSHOT %d (%s): the last 12 seconds, oldest first =====", state.snapN, why or "?")
+    local now = os.clock()
+    for _, e in ipairs(state.recBuf) do log("  -%4.1fs  %s", now - e.t, e.s) end
+    log("===== end of snapshot %d =====", state.snapN)
+end
+-- things the lock-ons must never pick: the players' saucer (its landing light), any player
+state.notTargetable = function(a)
+    local n = nameOf(a) or ""
+    return n:find("PlayerUFO") ~= nil or n:find("BP_CharacterPlayer") ~= nil
+end
 state.targetPoint = function(c)
+    -- (a missing bone gives back the mesh's origin, the feet: that's why Player 2's lock-ons
+    -- sat low. Only use a bone the mesh really has.)
     local mesh = subObj(c, "Mesh")
     if mesh then
-        for _, bone in ipairs({ "spine_02", "spine_01", "pelvis", "Spine1", "Hips" }) do
-            local ok, p = pcall(function() return mesh:GetSocketLocation(FName(bone)) end)
-            if ok and p and type(p.X) == "number" and (p.X ~= 0 or p.Y ~= 0 or p.Z ~= 0) then return p end
+        for _, bone in ipairs({ "spine_03", "spine_02", "Spine2", "Spine1" }) do
+            local okE, has = pcall(function() return mesh:DoesSocketExist(FName(bone)) end)
+            if okE and has then
+                local ok, p = pcall(function() return mesh:GetSocketLocation(FName(bone)) end)
+                if ok and p and type(p.X) == "number" then return { X = p.X, Y = p.Y, Z = p.Z } end
+            end
         end
     end
+    -- the middle of its bounds (people: about the chest; cars and props: their middle)
+    local okB = pcall(function()
+        local o, e = {}, {}
+        c:GetActorBounds(true, o, e)
+        if type(o.X) == "number" and type(e.Z) == "number" and e.Z > 0 then
+            state.tpOut = { X = o.X, Y = o.Y, Z = o.Z + e.Z * 0.2 }
+        else
+            state.tpOut = nil
+        end
+    end)
+    if okB and state.tpOut then local r = state.tpOut; state.tpOut = nil; return r end
     local ok, l = pcall(function() return c:K2_GetActorLocation() end)
     return ok and l or nil
 end
@@ -4757,7 +4799,7 @@ do
         for _, c in ipairs(chars) do
             if valid(c) then
                 local k = keyOf(c)
-                if k ~= pk and k ~= p1k and k ~= heldK then
+                if k ~= pk and k ~= p1k and k ~= heldK and not state.notTargetable(c) then
                     local l = state.targetPoint(c)
                     if l then
                         local dx, dy, dz = l.X - cam.X, l.Y - cam.Y, l.Z - cam.Z
@@ -4810,7 +4852,26 @@ do
             pcall(function() w:AddToPlayerScreen(6) end)
             pcall(function() w:SetAlignmentInViewport({ X = 0.5, Y = 0.5 }) end)
             pcall(function() w:SetVisibility(1) end)
+            -- centre the arcs on the point: the widget's root is a canvas with no size of its
+            -- own, so its picture hung down and to the right of the target. Give the widget a
+            -- size and pin the picture to its middle.
+            pcall(function()
+                local img = w.Image_146
+                local slot = img and img.Slot
+                if slot then
+                    pcall(function()
+                        local p, z, al = slot:GetPosition(), slot:GetSize(), slot:GetAlignment()
+                        log("Player 2 arcs picture was at (%.0f, %.0f), size %.0f x %.0f, alignment %.2f, %.2f",
+                            p.X or 0, p.Y or 0, z.X or 0, z.Y or 0, al.X or 0, al.Y or 0)
+                    end)
+                    pcall(function() slot:SetAnchors({ Minimum = { X = 0.5, Y = 0.5 }, Maximum = { X = 0.5, Y = 0.5 } }) end)
+                    pcall(function() slot:SetAlignment({ X = 0.5, Y = 0.5 }) end)
+                    pcall(function() slot:SetPosition({ X = CFG.P2_ARC_NUDGE_X, Y = CFG.P2_ARC_NUDGE_Y }) end)
+                end
+            end)
+            pcall(function() w:SetDesiredSizeInViewport({ X = 100, Y = 100 }) end)
             copy = w
+            state.p2CopyPK = nil
             log("Player 2 lock-on marker: own copy made (%s)", shortName(w))
         end
         -- the auto-lock (yellow) target first, then whatever the aim is on, then the mod's pick
@@ -4836,13 +4897,34 @@ do
             if CFG.P2_YELLOW_ONLY_HOVERED then
                 tgt = (okH and valid(hov) and keyOf(hov) ~= keyOf(pawn)) and hov or nil
             end
+            -- what the game itself has PK aimed at for Player 2 (read before the mod writes
+            -- anything): when there is one, the arcs go on it, bright, because that is what RB
+            -- grabs. The mod's own pick is only shown (dimmer) when the game has nothing.
+            local gameAim = nil
+            if ab then
+                local okG, g = pcall(function() return ab.m_pCurrentAimTarget end)
+                if okG and valid(g) and keyOf(g) ~= keyOf(pawn) then gameAim = g end
+            end
+            local gamePK = (okH and valid(hov) and keyOf(hov) ~= keyOf(pawn)) and hov or gameAim
+            if gamePK and state.notTargetable(gamePK) then gamePK = nil end
+            state.p2GamePK = gamePK
+            if CFG.P2_ARCS_FOLLOW_GAME then tgt = gamePK end   -- nothing for PK = no arcs (like Player 1)
+            local snap = os.clock() < (state.snapUntil or 0)
+            if (snap or (CFG.P2_TARGET_REPORT and (state.p2TgtReps or 0) < 30)) and os.clock() >= (state.p2TgtRepAt or 0) then
+                state.p2TgtRepAt = os.clock() + (snap and 0.5 or 2)
+                state.p2TgtReps = (state.p2TgtReps or 0) + 1
+                local function nm(x) return valid(x) and shortName(x) or "-" end
+                local okF, f0 = pcall(function() return focus and focus.m_pCurrentAutoLockTarget end)
+                log("P2 targets: PK hovered %s | PK aim %s | focus %s | mod pick %s | gun pick %s",
+                    nm(okH and hov or nil), nm(gameAim), nm(okF and f0 or nil), nm(tgt), nm(aliveTgt))
+            end
         end
         state.p2Lock = aliveTgt
         state.p2PKLock = tgt
         if CFG.P2_LOCK_REAL then
             if tgt then
                 if focus then pcall(function() focus.m_pCurrentAutoLockTarget = aliveTgt or tgt end) end
-                if mental then pcall(function() mental.m_pCurrentAimTarget = tgt end) end
+                if mental and not CFG.P2_ARCS_FOLLOW_GAME then pcall(function() mental.m_pCurrentAimTarget = tgt end) end
                 -- PK grabs its "hovered" thing: make that the yellow target while not holding
                 if CFG.P2_PK_USES_LOCK then
                     pcall(function()
@@ -4867,6 +4949,7 @@ do
         if not tgt then hideCopy() return end
         local loc = state.targetPoint(tgt)
         if not loc then hideCopy() return end
+        loc = { X = loc.X, Y = loc.Y, Z = loc.Z + CFG.P2_ARC_RAISE }
         -- holding something with PK: no yellow arcs (like Player 1's)
         do
             local ab = state.p2PKAbility()
@@ -4982,7 +5065,19 @@ do
         end
         pcall(function() copy:SetPositionInViewport({ X = out.X, Y = out.Y }, true) end)
         pcall(function() copy:SetVisibility(4) end)
-        if now - acquiredAt > 0.35 then pcall(function() copy:SetRenderOpacity(1.0) end) end
+        -- "PK can grab this": the game's marker has its own switch for when the mind
+        -- abilities and the weapon share the target (PK has it under Player 2's aim).
+        -- Flip it, pop the marker, and keep the arcs dimmer while PK can't grab it yet.
+        local pkNow = (valid(state.p2Hovered) and keyOf(state.p2Hovered) == k)
+            or (valid(state.p2GamePK) and keyOf(state.p2GamePK) == k)
+        if pkNow ~= state.p2CopyPK then
+            state.p2CopyPK = pkNow
+            pcall(function() copy:WeaponAndAbilitySharedTargetChanged(pkNow) end)
+            if pkNow then pcall(function() copy:PlayAnimation(copy.Blip, 0.0, 1, 0, 1.0, false) end) end
+        end
+        if now - acquiredAt > 0.35 then
+            pcall(function() copy:SetRenderOpacity(1.0) end)
+        end
         -- smaller when further away, like Player 1's (the game's 0.5 .. 1.3 range)
         local okC, cam = pcall(function() return state.p2.PlayerCameraManager:GetCameraLocation() end)
         if okC and cam then
@@ -5318,6 +5413,21 @@ do
             state.modPlacedWidgets = state.modPlacedWidgets or {}
             state.modPlacedWidgets[keyOf(c) or ""] = true
             pcall(function() c:SetRenderTranslation({ X = 0, Y = 0 }) end)
+            -- centre the bracket on the point (its picture hung below and right of it)
+            pcall(function()
+                local slot = c.Image_146 and c.Image_146.Slot
+                if slot then
+                    pcall(function()
+                        local p, z, al = slot:GetPosition(), slot:GetSize(), slot:GetAlignment()
+                        log("Player 2 bracket picture was at (%.0f, %.0f), size %.0f x %.0f, alignment %.2f, %.2f",
+                            p.X or 0, p.Y or 0, z.X or 0, z.Y or 0, al.X or 0, al.Y or 0)
+                    end)
+                    pcall(function() slot:SetAnchors({ Minimum = { X = 0.5, Y = 0.5 }, Maximum = { X = 0.5, Y = 0.5 } }) end)
+                    pcall(function() slot:SetAlignment({ X = 0.5, Y = 0.5 }) end)
+                    pcall(function() slot:SetPosition({ X = CFG.P2_BRACKET_NUDGE_X, Y = CFG.P2_BRACKET_NUDGE_Y }) end)
+                end
+            end)
+            pcall(function() c:SetDesiredSizeInViewport({ X = 100, Y = 100 }) end)
             log("Player 2 lock-on bracket: own copy made (%s, for %s)", shortName(c), shortName(w))
         end
         pcall(function() copy.m_pWeapon = w end)
@@ -5349,17 +5459,19 @@ do
                 local far = { X = c.X + math.cos(pitch) * math.cos(yaw) * 5000, Y = c.Y + math.cos(pitch) * math.sin(yaw) * 5000, Z = c.Z + math.sin(pitch) * 5000 }
                 local out = {}
                 if state.p2:ProjectWorldLocationToScreen(far, out, true) and out.X then
-                    x, y = out.X, out.Y
-                    local g = subObj(state.p2, "m_pGameplayToHud")
-                    local okV, v = pcall(function() return g.m_vCrosshairScreenLocation end)
-                    if okV and v then
-                        local _, gy = readXY(v)
-                        if type(gy) == "number" and gy > 0 and gy < out.Y * 2 then y = gy end
-                    end
+                    -- the crosshair sits above the middle of the view by the game's offset
+                    x, y = out.X, out.Y * (1 + CFG.P2_CROSSHAIR_RAISE)
                 end
             end)
         end
         if type(x) ~= "number" or type(y) ~= "number" then hide() return end
+        do
+            local shared = valid(tgt) and valid(state.p2PKLock) and keyOf(tgt) == keyOf(state.p2PKLock) or false
+            if shared ~= state.p2BracketShared then
+                state.p2BracketShared = shared
+                if CFG.P2_BRACKET_SHARED then pcall(function() copy:WeaponAndAbilitySharedTargetChanged(shared) end) end
+            end
+        end
         pcall(function() copy:SetPositionInViewport({ X = x, Y = y }, true) end)
         pcall(function() copy:SetRenderScale({ X = sc, Y = sc }) end)
         pcall(function() copy:SetRenderOpacity(op) end)
@@ -6071,7 +6183,7 @@ end
 do
     local last = nil
     addTickJob("p2LockSignal", 0.1, function()
-        if not (CFG.P2_LOCK_SIGNAL and valid(state.p2)) then last = nil return end
+        if not (CFG.P2_LOCK_SIGNAL and valid(state.p2)) then last = nil; state.p2CrossCache = nil return end
         local pawn = getPawn(state.p2)
         local mental = subObj(pawn, "m_pMentalAbilityComponent")
         local has = (mental and subObj(mental, "m_pCurrentAimTarget")) ~= nil
@@ -6081,18 +6193,32 @@ do
                 if okA and valid(arrayToList(arr)[1]) then has = true break end
             end
         end
-        if has == last then return end
+        -- (re-sent every second while on: P2's crosshair widget is remade when the HUD moves,
+        -- and a new one never heard the first signal)
+        if has == last and not (has and os.clock() >= (state.p2LockResendAt or 0)) then return end
+        state.p2LockResendAt = os.clock() + 1.0
         last = has
         local g = subObj(state.p2, "m_pGameplayToHud")
         if g then pcall(function() g.m_bWeaponAndAbilitySharedTarget = has end) end
-        for _, w in ipairs(FindAllOf("UserWidget") or {}) do
-            local cn = valid(w) and shortName(w) or ""
-            if cn:find("Crosshair") then
-                local okO, owner = pcall(function() return w:GetOwningPlayer() end)
-                if okO and samePawn(owner, state.p2) then
-                    pcall(function() w:WeaponAndAbilitySharedTargetChanged(has) end)
+        -- P2's crosshairs, found with one full widget search only when the cached ones are gone
+        -- or every 10 s (a full search every second would hitch)
+        local cache = state.p2CrossCache
+        local stale = not cache or os.clock() >= (state.p2CrossScanAt or 0)
+        if not stale then for _, w in ipairs(cache) do if not valid(w) then stale = true break end end end
+        if stale then
+            cache = {}
+            state.p2CrossScanAt = os.clock() + 10.0
+            for _, w in ipairs(FindAllOf("UserWidget") or {}) do
+                local cn = valid(w) and shortName(w) or ""
+                if cn:find("Crosshair") then
+                    local okO, owner = pcall(function() return w:GetOwningPlayer() end)
+                    if okO and samePawn(owner, state.p2) then cache[#cache + 1] = w end
                 end
             end
+            state.p2CrossCache = cache
+        end
+        for _, w in ipairs(cache) do
+            if valid(w) then pcall(function() w:WeaponAndAbilitySharedTargetChanged(has) end) end
         end
     end)
 end
@@ -6788,6 +6914,8 @@ if Key.F3 ~= nil then
     end)
 end
 if Key.F9 ~= nil then
+    -- Ctrl+F8 (or the Xbox Guide button, through the pad router DLL): "something looked wrong"
+    RegisterKeyBind(Key.F8, { ModifierKey.CONTROL }, function() state.snapshot("Ctrl+F8") end)
     RegisterKeyBind(Key.F9, { ModifierKey.CONTROL }, function()
         runGame("dumpEverything", dumpEverything)
     end)
@@ -9287,3 +9415,58 @@ OverkillCoop = {
     getWorld = getWorld, getStatics = getStatics, arrayToList = arrayToList, keyOf = keyOf,
     runGame = runGame, later = later, stat = stat, setRatio = setRatio, healthRatio = healthRatio,
 }
+
+-- Test recorder tick and the Guide-button snapshot request (see state.snapshot)
+;(function()
+    local last, reqAt = nil, 0
+    local function nm(x) return (x and valid(x)) and shortName(x):gsub("^BP_Character_", ""):gsub("_Base_C_", "_") or "-" end
+    local function pkOf(pc)
+        local mental = subObj(getPawn(pc), "m_pMentalAbilityComponent")
+        if not mental then return nil, nil end
+        for _, ab in ipairs(state.p2Abilities(mental)) do
+            if valid(ab) and nameOf(ab):find("kinesis") then
+                local okA, a = pcall(function() return ab.m_pCurrentAimTarget end)
+                local okH, h = pcall(function() return ab:GetCurrentHoveredActor() end)
+                local okT, held = pcall(function() return ab.m_pActiveTarget end)
+                return (okA and a or nil), (okH and h or nil), (okT and valid(held))
+            end
+        end
+    end
+    addTickJob("testRecorder", 0.25, function()
+        if not CFG.TEST_RECORDER then return end
+        local parts = {}
+        for i, pc in ipairs({ player1Controller(), state.p2 }) do
+            if valid(pc) then
+                local a, h, holding = pkOf(pc)
+                local f = subObj(getPawn(pc), "m_pFocusComponent")
+                local okF, ft = pcall(function() return f and f.m_pCurrentAutoLockTarget end)
+                parts[#parts + 1] = string.format("P%d PKaim=%s hover=%s%s gun=%s", i, nm(a), nm(h), holding and " HOLDING" or "", nm(okF and ft or nil))
+            end
+        end
+        if valid(state.p2) then
+            parts[#parts + 1] = string.format("| P2 arcs=%s", nm(state.p2PKLock))
+        end
+        local line = table.concat(parts, "  ")
+        local now = os.clock()
+        if line ~= last then
+            last = line
+            local b = state.recBuf
+            b[#b + 1] = { t = now, s = line }
+        end
+        while #state.recBuf > 0 and now - state.recBuf[1].t > 12 do table.remove(state.recBuf, 1) end
+        -- Guide button (the DLL writes this file)
+        if now >= reqAt then
+            reqAt = now + 0.25
+            for _, path in ipairs({ "padrouter_snapshot_request.txt", "ue4ss/padrouter_snapshot_request.txt" }) do
+                local f = io.open(path, "r")
+                if f then
+                    local txt = f:read("*a") or ""
+                    f:close()
+                    os.remove(path)
+                    local pad = txt:match("snapshot(%d)")
+                    if pad then state.snapshot("Guide button, pad " .. pad) end
+                end
+            end
+        end
+    end)
+end)()
