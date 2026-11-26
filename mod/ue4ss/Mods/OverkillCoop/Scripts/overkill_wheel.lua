@@ -2976,7 +2976,7 @@ psiClass = function(key)
     local c = StaticFindObject(path)
     return valid(c) and c or nil
 end
-fireProjectile = function(cls, from, to, pawn)
+fireProjectile = function(cls, from, to, pawn, speed, lob)
     local dx, dy, dz = to.X - from.X, to.Y - from.Y, to.Z - from.Z
     local yaw = math.deg(math.atan(dy, dx))
     local pitch = math.deg(math.atan(dz, math.sqrt(dx * dx + dy * dy)))
@@ -2986,8 +2986,8 @@ fireProjectile = function(cls, from, to, pawn)
     pcall(function() pr.Instigator = pawn end)
     -- give it its flight (it hung in the air): the projectile part's speed toward the target
     local d = math.max(1, math.sqrt(dx * dx + dy * dy + dz * dz))
-    local spd = CFG.PSI_SHOT_SPEED or 2200
-    local v = { X = dx / d * spd, Y = dy / d * spd, Z = dz / d * spd + (CFG.PSI_SHOT_LOB or 250) }
+    local spd = speed or CFG.PSI_SHOT_SPEED or 2200
+    local v = { X = dx / d * spd, Y = dy / d * spd, Z = dz / d * spd + (lob or CFG.PSI_SHOT_LOB or 250) }
     local pm = nil
     for _, nm in ipairs({ "ProjectileMovement", "m_pProjectileMovement", "ProjectileMovementComponent", "MovementComponent" }) do
         pm = subObj(pr, nm)
@@ -3012,6 +3012,7 @@ fireProjectile = function(cls, from, to, pawn)
     if not state.psiFlightLogged then state.psiFlightLogged = true; wlog("Psi shot: flight %s", pm and "set" or "no projectile part found") end
     return pr
 end
+state.fireProjectile = fireProjectile
 CAST.psibarrage = function(i, p, pc, pawn, pressed)
     if not pressed then return end
     local cls = psiClass("psigrenade")

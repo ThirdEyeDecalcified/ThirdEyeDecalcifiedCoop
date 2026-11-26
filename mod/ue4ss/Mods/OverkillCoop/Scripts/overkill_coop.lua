@@ -10404,6 +10404,55 @@ end)()
         for _, w in ipairs(zaps()) do pcall(applyBeam, w) end
     end)
 
+    -- ---------- Zap-O-Matic fires projectiles instead of its beam (TEST) ----------
+    local zapShot, zapNext = "Game default", {}
+    add({ key = "zapshot", page = PAGE_PROJ, label = "TEST  Zap-O-Matic fires (instead of its beam, both players)", options = projList,
+          show = function() return true end, get = function() return zapShot end,
+          set = function(v) zapShot = v; log("Zap-O-Matic: now fires %s", v) end })
+    addTickJob("zapShots", 0.0, function()
+        if zapShot == "Game default" or not state.fireProjectile then return end
+        local cls = classFor(zapShot, projByName)
+        if not valid(cls) then return end
+        local now = os.clock()
+        for i, pc in ipairs({ player1Controller(), state.p2 }) do
+            if valid(pc) then
+                local pawn = getPawn(pc)
+                local eq = subObj(pawn, "m_pEquipmentManagerComponent")
+                local okW, w = pcall(function() return eq:GetCurrentWeapon() end)
+                if not (okW and valid(w)) then pcall(function() w = arrayToList(eq:GetCurrentWeapons())[1] end) end
+                if valid(w) and nameOf(w):find("Zap%-O%-Matic") then
+                    local okS, firing = pcall(function() return w:IsShooting() end)
+                    if okS and firing then
+                        -- no beam while it fires the projectile
+                        pcall(function() w.m_pBeam:StopBeam() end)
+                        if now >= (zapNext[i] or 0) then
+                            zapNext[i] = now + (CFG.ZAP_SHOT_EVERY or 0.2)
+                            pcall(function()
+                                local from = w:K2_GetActorLocation()
+                                local to = nil
+                                -- at what the zap is locked on to, else straight down the aim
+                                pcall(function()
+                                    for _, t in ipairs(arrayToList(w.m_apCurrentLockedTargets)) do
+                                        if valid(t) then to = state.targetPoint(t) break end
+                                    end
+                                end)
+                                if not to then
+                                    local cm = pc.PlayerCameraManager
+                                    local c, r = cm:GetCameraLocation(), cm:GetCameraRotation()
+                                    local raise = (i == 2 and state.p2CrosshairPitch) and (state.p2CrosshairPitch() or 0) or 0
+                                    local yaw, pitch = math.rad(r.Yaw), math.rad(r.Pitch + raise)
+                                    to = { X = c.X + math.cos(pitch) * math.cos(yaw) * 6000, Y = c.Y + math.cos(pitch) * math.sin(yaw) * 6000,
+                                           Z = c.Z + math.sin(pitch) * 6000 }
+                                end
+                                state.fireProjectile(cls, { X = from.X, Y = from.Y, Z = from.Z + 10 }, to, pawn, CFG.ZAP_SHOT_SPEED or 5000, 0)
+                            end)
+                        end
+                    end
+                end
+            end
+        end
+    end)
+
     -- ---------- upgrades (this session only), shown as chains like the Pox lab ----------
     -- Each weapon / ability's upgrades are a chain (cheapest first = level 1). One row per
     -- chain: pick the level; the boxes show it (filled = on). "Game (save)" is what you bought.
