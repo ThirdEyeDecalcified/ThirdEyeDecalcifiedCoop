@@ -4239,11 +4239,22 @@ OK.addTickJob("lbGate", 0.0, function() pcall(lbGateTick) end)
 local WHEEL_ACTIONS = { "WeaponSelect" }
 local NEVER = 100000.0
 local schemeGate = { moved = {}, logged = {}, at = 0 }
+local function schemeName(sc)
+    local n = OK.shortName(sc) or ""
+    return n
+end
+-- the schemes whose LB is the mod's: walking (Crypto, Holobob) always, the saucer with the
+-- saucer wheel on. Skating keeps its LB (PK there).
+local function schemeWanted(sc)
+    local n = schemeName(sc)
+    if not n:find("Focus", 1, true) then return false end
+    if n:find("UFO", 1, true) then return CFG.SAUCER_WHEEL ~= false end
+    return true
+end
 local function isWheelAction(m)
-    local n = ""
-    pcall(function() n = OK.shortName(m.m_pInputActionInfo) or "" end)
-    for _, w in ipairs(WHEEL_ACTIONS) do if n:find(w, 1, true) then return true, n end end
-    return false, n
+    local n = "(unnamed)"
+    pcall(function() local v = OK.shortName(m.m_pInputActionInfo); if v and v ~= "" then n = v end end)
+    return true, n
 end
 local function schemeSet(sc, take)
     local k = OK.keyOf(sc)
@@ -4275,7 +4286,7 @@ local function schemeSet(sc, take)
         schemeGate.moved[k] = { sc = sc, list = moved }
         if #moved > 0 and not schemeGate.logged[k] then
             schemeGate.logged[k] = true
-            wlog("LB: the game's weapon wheel switched off in %s (%s)", OK.shortName(sc), table.concat(info, "; "))
+            wlog("LB: the game's own LB actions switched off in %s (%s)", OK.shortName(sc), table.concat(info, "; "))
         end
         return #moved
     else
@@ -4293,7 +4304,7 @@ local function schemeTick()
     pcall(function()
         for _, sc in ipairs(FindAllOf("BFGInputScheme") or {}) do
             if valid(sc) then
-                schemeSet(sc, CFG.LB_TAKE_FROM_GAME ~= false and CFG.MIND_WHEEL and true or false)
+                schemeSet(sc, CFG.LB_TAKE_FROM_GAME ~= false and CFG.MIND_WHEEL and schemeWanted(sc) or false)
             end
         end
     end)
@@ -4430,7 +4441,7 @@ OK.addTickJob("mindWheel", 0.0, function()
             local wi = p.pending
             p.pending = nil
             -- a short press that only flashed the wheel open (nothing picked): still a quick swap
-            if not wi and not p.lbPicked and p.lbPressAt and os.clock() - p.lbPressAt < (CFG.LB_TAP_MAX or 0.5) and onFoot(pawn) then
+            if not wi and not p.lbPicked and p.lbPressAt and os.clock() - p.lbPressAt < (CFG.LB_TAP_TIME or 0.25) and onFoot(pawn) then
                 OK.later(0.15, "wheelQuickSwap", function() quickSwap(i, pawn) end)
             end
             p.lbPressAt = nil
