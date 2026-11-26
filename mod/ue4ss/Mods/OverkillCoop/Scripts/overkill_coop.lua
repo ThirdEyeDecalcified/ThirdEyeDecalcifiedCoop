@@ -9846,6 +9846,25 @@ end)()
     state.trainerExtras = state.trainerExtras or {}
     local add = function(e) state.trainerExtras[#state.trainerExtras + 1] = e end
     local function short(n) return (n or ""):match("([%w_%-]+)$") or n end
+    -- (IsChildOf on a class crashed the game from Lua: walk the parent classes by name instead)
+    local function inherits(c, baseShort)
+        local cur, depth = c, 0
+        while cur and depth < 12 do
+            local okV, isV = pcall(function() return cur:IsValid() end)
+            if not (okV and isV) then return false end
+            if short(nameOf(cur)) == baseShort then return true end
+            local okS, sup = pcall(function() return cur:GetSuperStruct() end)
+            if not okS then return false end
+            cur = sup
+            depth = depth + 1
+        end
+        return false
+    end
+    local function inGame()
+        local wn = ""
+        pcall(function() wn = nameOf(getWorld()) end)
+        return wn ~= "" and not wn:find("/Menus/", 1, true)
+    end
 
     -- ---------- projectiles ----------
     local projList, projByName = { "Game default" }, {}
@@ -9855,8 +9874,7 @@ end)()
             if valid(c) then
                 local n = short(nameOf(c))
                 if n:find("Projectile") and not n:find("^Default__") and not n:find("^SKEL_") and not n:find("^REINST_") and not seen[n] then
-                    local okS, isP = pcall(function() return c:IsChildOf(StaticFindObject("/Script/BFGCore.BFGProjectile")) end)
-                    if not okS or isP then seen[n] = true; projByName[n] = c end
+                    if inherits(c, "BFGProjectile") then seen[n] = true; projByName[n] = c end
                 end
             end
         end
@@ -9878,9 +9896,11 @@ end)()
     local npcKinds = {}     -- list of NPC weapon kinds seen
     local function projWeapons()
         local out = {}
+        local base = StaticFindObject("/Script/BFGCore.BFGWeapon_BaseProjectile")
+        if not (inGame() and base and valid(base)) then return out end
         pcall(function()
             local arr = {}
-            getStatics():GetAllActorsOfClass(getWorld(), StaticFindObject("/Script/BFGCore.BFGWeapon_BaseProjectile"), arr)
+            getStatics():GetAllActorsOfClass(getWorld(), base, arr)
             for _, a in ipairs(arr) do
                 local v = a
                 if type(a) == "userdata" and not valid(a) then pcall(function() v = a:get() end) end
@@ -9956,7 +9976,7 @@ end)()
     local scanned = false
     onWorldChange(function() scanned = false end)
     addTickJob("projectileFirstScan", 5.0, function()
-        if scanned then return end
+        if scanned or not inGame() then return end
         scanned = true
         refreshProjectiles()
         for _, w in ipairs(projWeapons()) do
@@ -9976,8 +9996,7 @@ end)()
             if valid(c) then
                 local n = short(nameOf(c))
                 if not n:find("^Default__") and not n:find("^SKEL_") and not n:find("^REINST_") and not seen[n] then
-                    local okS, isB = pcall(function() return c:IsChildOf(StaticFindObject("/Script/BFGCore.BFGProjectile_Beam")) end)
-                    if okS and isB then seen[n] = true; beamByName[n] = c end
+                    if n:find("Beam") and inherits(c, "BFGProjectile_Beam") then seen[n] = true; beamByName[n] = c end
                 end
             end
         end
@@ -10101,7 +10120,7 @@ end)()
     local upgScanned = false
     onWorldChange(function() upgScanned = false end)
     addTickJob("upgradeFirstScan", 5.0, function()
-        if upgScanned then return end
+        if upgScanned or not inGame() then return end
         upgScanned = true
         local n = scanUpgrades()
         if n > 0 then log("Upgrades: %d listed for the trainer", n) end
