@@ -8822,7 +8822,8 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
             end
             if padMode then pcall(function() local sl = tabs:AddChildToHorizontalBox(chip("OK_TabLB", "LB")); sl:SetVerticalAlignment(2) end) end
             for _, pi in ipairs(TAB_ORDER) do
-                local pn = PAGES[pi]
+                local TAB_SHORT = { ["Spawn & travel"] = "Travel", ["Known issues"] = "Issues", ["Projectiles"] = "Shots" }
+                local pn = TAB_SHORT[PAGES[pi]] or PAGES[pi]
                 local t
                 if pi == page then
                     -- the page you're on: dark letters on a yellow tab
@@ -9850,8 +9851,7 @@ end)()
     local function inherits(c, baseShort)
         local cur, depth = c, 0
         while cur and depth < 12 do
-            local okV, isV = pcall(function() return cur:IsValid() end)
-            if not (okV and isV) then return false end
+            if not valid(cur) then return false end
             if short(nameOf(cur)) == baseShort then return true end
             local okS, sup = pcall(function() return cur:GetSuperStruct() end)
             if not okS then return false end
@@ -9868,19 +9868,57 @@ end)()
 
     -- ---------- projectiles ----------
     local projList, projByName = { "Game default" }, {}
+    local original = {}     -- weapon key -> { a, b, c } original cached classes
     local function refreshProjectiles()
         local seen = {}
         for _, c in ipairs(FindAllOf("BlueprintGeneratedClass") or {}) do
             if valid(c) then
                 local n = short(nameOf(c))
                 if n:find("Projectile") and not n:find("^Default__") and not n:find("^SKEL_") and not n:find("^REINST_") and not seen[n] then
-                    if inherits(c, "BFGProjectile") then seen[n] = true; projByName[n] = c end
+                    -- (by name: the parent check found nothing in game)
+                    if not n:find("Beam") then seen[n] = true; projByName[n] = c end
                 end
             end
         end
+        -- and from every gun in the level (what each one fires) and projectiles flying right now
+        local function addCls(c)
+            if valid(c) then
+                local n = short(nameOf(c))
+                if n ~= "" and n ~= "None" and not n:find("^Default__") and not seen[n] then seen[n] = true; projByName[n] = c end
+            end
+        end
+        pcall(function()
+            local base = StaticFindObject("/Script/BFGCore.BFGWeapon_BaseProjectile")
+            if not (inGame() and base and valid(base)) then return end
+            local arr = {}
+            getStatics():GetAllActorsOfClass(getWorld(), base, arr)
+            for _, a in ipairs(arr) do
+                local w = a
+                if type(a) == "userdata" and not valid(a) then pcall(function() w = a:get() end) end
+                if valid(w) then
+                    for _, f in ipairs({ "m_pCachedProjectileClass", "m_pCachedAlternateProjectileClass", "m_pCachedSecondAlternateProjectileClass" }) do
+                        local okF, c = pcall(function() return w[f] end)
+                        -- (skip what the mod itself put there)
+                        if okF and not (original[keyOf(w)]) then addCls(c) end
+                    end
+                end
+            end
+        end)
+        pcall(function()
+            local base = StaticFindObject("/Script/BFGCore.BFGProjectile")
+            if not (inGame() and base and valid(base)) then return end
+            local arr = {}
+            getStatics():GetAllActorsOfClass(getWorld(), base, arr)
+            for _, a in ipairs(arr) do
+                local v = a
+                if type(a) == "userdata" and not valid(a) then pcall(function() v = a:get() end) end
+                if valid(v) then pcall(function() addCls(v:GetClass()) end) end
+            end
+        end)
         local names = {}
         for n in pairs(seen) do names[#names + 1] = n end
         table.sort(names)
+        log("Projectiles: %d projectile types loaded right now", #names)
         for i = #projList, 2, -1 do projList[i] = nil end
         for _, n in ipairs(names) do projList[#projList + 1] = n end
     end
@@ -9892,7 +9930,6 @@ end)()
     local PLAYER_GUNS = { "DisintegratorRay", "IonDetonator", "AnalProbe" }
     local function isPlayerGun(k) for _, g in ipairs(PLAYER_GUNS) do if k:find(g) then return true end end return false end
     local choice = {}       -- kind -> projectile name
-    local original = {}     -- weapon key -> { a, b, c } original cached classes
     local npcKinds = {}     -- list of NPC weapon kinds seen
     local function projWeapons()
         local out = {}
@@ -9996,7 +10033,7 @@ end)()
             if valid(c) then
                 local n = short(nameOf(c))
                 if not n:find("^Default__") and not n:find("^SKEL_") and not n:find("^REINST_") and not seen[n] then
-                    if n:find("Beam") and inherits(c, "BFGProjectile_Beam") then seen[n] = true; beamByName[n] = c end
+                    if n:find("Beam") and (n:find("Projectile") or n:find("Zap") or n:find("Ray") or inherits(c, "BFGProjectile_Beam")) and not n:find("Effect") then seen[n] = true; beamByName[n] = c end
                 end
             end
         end
@@ -10057,22 +10094,23 @@ end)()
         for _, w in ipairs(zaps()) do pcall(applyBeam, w) end
     end)
 
-    -- ---------- upgrades (this session only) ----------
-    local upgrades = {}     -- { tag = "Upgrade.X", label = "Weapon: name" }
-    local upgState = {}     -- tag -> "Game (save)" / "Off" / "On"
-    local UPG_OPTS = { "Game (save)", "Off (this session)", "On (this session)" }
+    -- ---------- upgrades (this session only), shown as chains like the Pox lab ----------
+    -- Each weapon / ability's upgrades are a chain (cheapest first = level 1). One row per
+    -- chain: pick the level; the boxes show it (filled = on). "Game (save)" is what you bought.
+    local chains, chainOf, upgState = {}, {}, {}
+    local UPG_LOGGED = false
     local function unlocks()
         local ps = subObj(player1Controller(), "PlayerState")
         return ps and subObj(ps, "m_pUnlocks")
     end
     local function setUpgrade(tagName, mode)
         local u = unlocks()
-        if not u then log("Upgrades: no unlock list yet") return end
+        if not u then return end
         local tag = { TagName = FName(tagName) }
-        if mode == "Off (this session)" then
+        if mode == "off" then
             pcall(function() u:LockRemoveTag(tag, false) end)
             pcall(function() u:PlayerState_LockTag(getWorld(), tag) end)
-        elseif mode == "On (this session)" then
+        elseif mode == "on" then
             pcall(function() u:RemoveLockedTag(tag) end)
             pcall(function() u:UnlockTag(tag, false) end)
         else
@@ -10081,38 +10119,98 @@ end)()
         end
         upgState[tagName] = mode
     end
+    local function owned(tagName)
+        local u = unlocks()
+        local ok, v = pcall(function() return u:IsUnlockedTag({ TagName = FName(tagName) }) end)
+        return ok and v == true
+    end
+    local function boxes(n, total)
+        local b = ""
+        for i = 1, total do b = b .. (i <= n and "[#]" or "[ ]") end
+        return b
+    end
+    local function pretty(seg)
+        return (seg or ""):gsub("_", " "):gsub("(%l)(%u)", "%1 %2")
+    end
+    local function chainOptions(ch)
+        local o = { "Game (save)" }
+        for lvl = 0, #ch.items do
+            local what = lvl == 0 and "none" or ch.items[lvl].label
+            o[#o + 1] = string.format("Level %d  %s  %s", lvl, boxes(lvl, #ch.items), what)
+        end
+        return o
+    end
+    local function applyChain(ch, v)
+        if v == "Game (save)" then
+            for _, it in ipairs(ch.items) do setUpgrade(it.tag, "game") end
+            ch.level = nil
+            return
+        end
+        local lvl = tonumber(v:match("^Level (%d+)")) or 0
+        for i, it in ipairs(ch.items) do setUpgrade(it.tag, i <= lvl and "on" or "off") end
+        ch.level = lvl
+    end
+    local function addChainRow(ch)
+        ch.options = chainOptions(ch)
+        add({ key = "upg_" .. ch.key:gsub("[^%w]", "_"), page = PAGE_UPG, label = ch.label, options = ch.options,
+              show = function() return true end,
+              get = function()
+                  if ch.level then return ch.options[ch.level + 2] end
+                  return "Game (save)"
+              end,
+              set = function(v) applyChain(ch, v); log("Upgrades: %s -> %s", ch.label, v) end })
+    end
     local function scanUpgrades()
-        local seen = {}
-        for _, a in ipairs(upgrades) do seen[a.tag] = true end
-        local n = 0
+        local found = {}
         for _, a in ipairs(FindAllOf("BFGDataAssetPoxLabUpgrade") or {}) do
             if valid(a) then
                 local okT, t = pcall(function() return a.m_oUpgradeTag.TagName:ToString() end)
-                if okT and t and t ~= "None" and not seen[t] then
-                    seen[t] = true
-                    local okW, wn = pcall(function() return a.m_strWeaponName:ToString() end)
+                if okT and t and t ~= "None" and not chainOf[t] then
                     local okU, un = pcall(function() return a.m_strUpgradeName:ToString() end)
-                    local label = ((okW and wn ~= "") and (wn .. ": ") or "") .. ((okU and un ~= "") and un or short(t))
-                    upgrades[#upgrades + 1] = { tag = t, label = label }
-                    n = n + 1
-                    local tagName = t
-                    add({ key = "upg_" .. t:gsub("[^%w]", "_"), page = PAGE_UPG, label = label, options = UPG_OPTS,
-                          show = function() return true end,
-                          get = function() return upgState[tagName] or "Game (save)" end,
-                          set = function(v) setUpgrade(tagName, v); log("Upgrades: %s -> %s", tagName, v) end })
+                    local okW, wn = pcall(function() return a.m_strWeaponName:ToString() end)
+                    local okC, cost = pcall(function() return a.m_iUpgradeCost end)
+                    found[#found + 1] = { tag = t, label = (okU and un ~= "") and un or short(t),
+                        weapon = (okW and wn ~= "") and wn or nil, cost = (okC and tonumber(cost)) or 0 }
                 end
             end
         end
+        if #found == 0 then return 0 end
+        if not UPG_LOGGED then
+            UPG_LOGGED = true
+            for _, f in ipairs(found) do log("Upgrade found: %s | %s | weapon %s | cost %d", f.tag, f.label, tostring(f.weapon), f.cost) end
+        end
+        -- group: the weapon name when the game has one, else the tag without its last part
+        local groups, order = {}, {}
+        for _, f in ipairs(found) do
+            local gk = f.weapon or f.tag:match("^(.*)%.[^%.]+$") or f.tag
+            if not groups[gk] then groups[gk] = {}; order[#order + 1] = gk end
+            table.insert(groups[gk], f)
+        end
+        table.sort(order)
+        local n = 0
+        for _, gk in ipairs(order) do
+            local items = groups[gk]
+            table.sort(items, function(x, y) if x.cost ~= y.cost then return x.cost < y.cost end return x.tag < y.tag end)
+            local label = pretty(gk:match("([^%.]+)$") or gk)
+            local ch = { key = gk, label = label, items = items }
+            chains[#chains + 1] = ch
+            for _, it in ipairs(items) do chainOf[it.tag] = ch end
+            addChainRow(ch)
+            n = n + #items
+        end
         return n
     end
-    add({ key = "upg_all", page = PAGE_UPG, label = "All upgrades (this session only, the save keeps yours)",
+    add({ key = "upg_all", page = PAGE_UPG, label = "ALL UPGRADES (this session only, your save keeps what you bought)",
           options = { "Game (save)", "Base Crypto (all off)", "Fully upgraded (all on)" }, show = function() return true end,
           get = function() return state.upgAll or "Game (save)" end,
           set = function(v)
               state.upgAll = v
-              local mode = (v == "Base Crypto (all off)" and "Off (this session)") or (v == "Fully upgraded (all on)" and "On (this session)") or "Game (save)"
-              for _, a in ipairs(upgrades) do setUpgrade(a.tag, mode) end
-              log("Upgrades: all -> %s (%d upgrades)", v, #upgrades)
+              for _, ch in ipairs(chains) do
+                  if v == "Game (save)" then applyChain(ch, "Game (save)")
+                  elseif v == "Base Crypto (all off)" then applyChain(ch, "Level 0")
+                  else applyChain(ch, "Level " .. #ch.items) end
+              end
+              log("Upgrades: all -> %s (%d chains)", v, #chains)
           end })
     add({ key = "act_upgscan", page = PAGE_UPG, label = "Look again for upgrades (they list once the game has loaded them)",
           options = { "(choose)", "Scan now" }, show = function() return true end, get = function() return "(choose)" end,
@@ -10123,9 +10221,8 @@ end)()
         if upgScanned or not inGame() then return end
         upgScanned = true
         local n = scanUpgrades()
-        if n > 0 then log("Upgrades: %d listed for the trainer", n) end
-        -- re-apply this session's choices after a map change
-        for t, m in pairs(upgState) do if m ~= "Game (save)" then setUpgrade(t, m) end end
+        if n > 0 then log("Upgrades: %d listed in %d chains", n, #chains) end
+        for _, ch in ipairs(chains) do if ch.level then applyChain(ch, "Level " .. ch.level) end end
     end)
 
     -- ---------- DNA (this one does go into the save) ----------
