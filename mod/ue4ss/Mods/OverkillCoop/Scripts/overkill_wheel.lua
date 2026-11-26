@@ -110,13 +110,13 @@ local SIDE_ABILITIES = {
 local POWERS = {
     { name = "Lock-on",            cost = "free",      ready = true,  desc = "The game's normal LT lock-on." },
     { name = "Free Love",          cost = "free",         ready = true, beta = true, cast = "freelove",
-      desc = "LT: everyone in front of you dances. Enough dancers clear the wanted level (more the higher it is)." },
+      desc = "Hold LT: a love beam like the second game's. Keep people in it and they fall for you, then dance. Enough dancers clear the wanted level." },
     { name = "Free Fear",          cost = "free",         ready = true, beta = true, cast = "freefear",
-      desc = "LT: instant terror. Everyone in front of you, soldiers and agents too, drops the fight and runs." },
+      desc = "LT: instant terror. Everyone in front of you drops the fight and runs. With a dot spare, a Mind Flash too: people near you are knocked back and stunned, and drivers jump out of their cars." },
     { name = "Riot Hysteria",     cost = "2",         ready = true, beta = true, cast = "hysteria",
       desc = "LT: drive someone berserk. They lash out at whoever is nearest, and anyone they hurt catches it too." },
-    { name = "Body Snatch",        cost = "1 + drain", ready = true, beta = true, cast = "bodysnatch",
-      desc = "LT on someone: take their body (they vanish). Drains a dot every few seconds. LT again to jump out." },
+    { name = "Body Snatch",        cost = "1",         ready = true, beta = true, cast = "bodysnatch",
+      desc = "LT on someone: take their body and look. Full heal, faster run. Your disguise wears down over time, faster when you're wanted or hit. LT again to jump out." },
     { name = "Cryokinesis",        cost = "1 per second", ready = true, beta = true, cast = "cryo",
       desc = "Hold LT: a freezing cone slows people, then freezes them solid. Shoot a frozen one to shatter it." },
     { name = "Pyrokinesis",        cost = "2",         ready = true, beta = true, cast = "pyro",
@@ -125,8 +125,8 @@ local POWERS = {
       desc = "Hold LT to charge (3 stages), let go: a ground wave rolls out and launches everyone skyward. (To become the psi mutants' own shockwave.)" },
     { name = "Psi-Barrage",        cost = "2",         ready = true, beta = true, cast = "psibarrage",
       desc = "LT: the psi mutants' own psychic grenades, thrown at up to 3 enemies in front of you. (Meet a psi mutant once first.)" },
-    { name = "Super Baller Disc",  cost = "?",         ready = false,
-      desc = "Coming soon: a psychic ball under a spinning disc." },
+    { name = "Super Baller Disc",  cost = "2",         ready = true, beta = true, cast = "baller",
+      desc = "LT: a purple disc like the second game's Dislocator. It skims to your target, latches on and drags them, bowling over anyone in the way, then bounces to the next one." },
     { name = "Black Hole PK",      cost = "3",         ready = true, beta = true, cast = "blackhole",
       desc = "LT while holding something with PK: it becomes a black hole. Everything nearby slams into it, then it blows." },
     { name = "Cloak & Deflector",  cost = "drain",     ready = true, beta = true, cast = "cloak",
@@ -1304,19 +1304,9 @@ state.playFx, state.playSound = playFx, playSound
 -- Free Love: the game's own "distract" hypnosis on everyone in front of you; enough
 -- dancers clear the wanted level (more needed the higher it is)
 local DISTRACT = "/Game/Blueprints/MentalAbilities/BP_MentalAbility_Hypnotize_Distract.BP_MentalAbility_Hypnotize_Distract_C"
-CAST.freelove = function(i, p, pc, pawn, pressed)
-    if not pressed then return end
-    -- 1 player only for now (it crashed 2-player games in testing)
-    if valid(state.p2) and not CFG.FREE_LOVE_SPLIT then
-        if (p.loveNoteAt or 0) < os.clock() then p.loveNoteAt = os.clock() + 5; wlog("P%d Free Love: single player only for now", i) end
-        return
-    end
-    if (p.loveAt or 0) > os.clock() then return end
-    p.loveAt = os.clock() + 1.0                       -- free, but not every frame
+local function loveBurst(i, p, pc, pawn, hit)
     local cls = mentalClass(DISTRACT)
     local mental = subObj(pawn, "m_pMentalAbilityComponent")
-    local hit = cone(pc, pawn, CFG.FREE_RANGE, 0.55)
-    pcall(coneWave, pc, pawn, CFG.FREE_RANGE, 0.55, { R = 1.0, G = 0.35, B = 0.8, A = 1 })
     local n = 0
     for _, e in ipairs(hit) do
         local ok = cls and mental and pcall(function() mental:ActivateAbilityEffectOnTarget(cls, e.n) end)
@@ -1724,6 +1714,8 @@ local POWER_COLOR = {
     ["Pyrokinesis"] = { R = 1.0, G = 0.5, B = 0.05 },     ["Free Love"] = { R = 1.0, G = 0.4, B = 0.8 },
     ["Free Fear"] = { R = 1.0, G = 0.9, B = 0.1 },        ["Zero-G Cone"] = { R = 0.9, G = 0.9, B = 1.0 },
     ["Psychic Tether"] = { R = 1.0, G = 0.75, B = 0.2 },  ["Body Snatch"] = { R = 0.2, G = 1.0, B = 0.6 },
+    ["Smitten"] = { R = 1.0, G = 0.6, B = 0.85 },         ["Mind Flash"] = { R = 1.0, G = 1.0, B = 0.6 },
+    ["Super Baller Disc"] = { R = 0.6, G = 0.2, B = 1.0 },
 }
 local function tintArc(a, c)
     if not (valid(a) and c) then return end
@@ -1757,6 +1749,7 @@ local MARK_TEXT = {
     ["Riot Hysteria"] = "BERSERK", ["Overload Mutation"] = "OVERLOAD", ["Kinetic Overload"] = "BOUNCY",
     ["Pyrokinesis"] = "BURNING", ["Free Fear"] = "SCARED", ["Free Love"] = "GROOVY", ["Cryokinesis"] = "FROZEN",
     ["Zero-G Cone"] = "FLOATING", ["Psychic Tether"] = "TETHERED", ["Psychic Ragdoll"] = "LIMP",
+    ["Smitten"] = "SMITTEN", ["Mind Flash"] = "STUNNED", ["Super Baller Disc"] = "DISLOCATED",
 }
 local marks = {}       -- npc key -> { n, power, untilT, labels = { [slot] = textActor } }
 local textClass = nil
@@ -2134,6 +2127,297 @@ CAST.kinetic = function(i, p, pc, pawn, pressed, held, dt)
     end, function() destroy(ball) end)
 end
 
+-- Free Love, the second game's way: hold LT for a love beam. Everyone in it fills up with
+-- love (closer = faster); full, they fall for you and dance. Let go and the unfinished
+-- ones slowly lose interest.
+local LOVE_PINK = { R = 1.0, G = 0.35, B = 0.8, A = 1 }
+default("FREE_LOVE_BEAM", true)          -- false = the old tap-for-a-cone Free Love
+default("FREE_LOVE_FILL_SECONDS", 1.2)   -- how long in the beam (up close) until someone's in love
+default("FREE_LOVE_CONE", 0.8)           -- how wide the beam is (cosine of the half-angle)
+CAST.freelove = function(i, p, pc, pawn, pressed, held, dt)
+    -- 1 player only when switched off for split screen (it crashed 2-player games once)
+    if valid(state.p2) and not CFG.FREE_LOVE_SPLIT then
+        if pressed and (p.loveNoteAt or 0) < os.clock() then p.loveNoteAt = os.clock() + 5; wlog("P%d Free Love: single player only for now", i) end
+        return
+    end
+    if CFG.FREE_LOVE_BEAM == false then
+        if not pressed or (p.loveAt or 0) > os.clock() then return end
+        p.loveAt = os.clock() + 1.0
+        pcall(coneWave, pc, pawn, CFG.FREE_RANGE, 0.55, LOVE_PINK)
+        loveBurst(i, p, pc, pawn, (cone(pc, pawn, CFG.FREE_RANGE, 0.55)))
+        return
+    end
+    local L = p.love
+    if not held then
+        if L then
+            p.love, p.powerLabel = nil, nil
+            -- what's left wears off over a few seconds
+            local left = L.meter
+            addJob("loveFade", function(dt2)
+                local any = false
+                for k, m in pairs(left) do
+                    m = m - (dt2 or 0.1) * 0.4
+                    left[k] = (m > 0) and m or nil
+                    any = any or m > 0
+                end
+                return any and (p.love == nil)
+            end)
+            state.loveLeft = left
+        end
+        return
+    end
+    if not L then
+        L = { meter = state.loveLeft or {}, waveAt = 0, labelAt = 0, fell = 0 }
+        state.loveLeft = nil
+        p.love = L
+    end
+    local now = os.clock()
+    local cosMin = CFG.FREE_LOVE_CONE or 0.8
+    if now >= L.waveAt then L.waveAt = now + 0.3; pcall(coneWave, pc, pawn, CFG.FREE_RANGE, cosMin, LOVE_PINK) end
+    local me = locOf(pawn)
+    local hit = cone(pc, pawn, CFG.FREE_RANGE, cosMin)
+    local fell, filling = {}, 0
+    state.dancers = state.dancers or {}
+    for _, e in ipairs(hit) do
+        local k = OK.keyOf(e.n)
+        if (state.dancers[k] or -100) < now - 9 then     -- not dancing already
+            local l = me and locOf(e.n)
+            local d = (l and me) and math.sqrt((l.X - me.X) ^ 2 + (l.Y - me.Y) ^ 2) or CFG.FREE_RANGE
+            local speed = 1.6 - math.min(1, d / CFG.FREE_RANGE)        -- 1.6x up close, 0.6x at the edge
+            local m = (L.meter[k] or 0) + (dt or 0.03) * speed / (CFG.FREE_LOVE_FILL_SECONDS or 1.2)
+            if m >= 1 then
+                L.meter[k] = nil
+                fell[#fell + 1] = e
+            else
+                L.meter[k] = m
+                filling = filling + 1
+                if m > 0.15 then mark(e.n, "Smitten", 0.5) end
+            end
+        end
+    end
+    if #fell > 0 then
+        L.fell = L.fell + #fell
+        for _, e in ipairs(fell) do unmark(e.n) end
+        loveBurst(i, p, pc, pawn, fell)
+    end
+    if now >= L.labelAt then
+        L.labelAt = now + 0.25
+        p.powerLabel = string.format("Free Love beam  %d falling for you, %d in love", filling, L.fell)
+    end
+end
+-- Mind Flash (the second game's): a burst around you. People near are knocked back and
+-- stunned, then run; cars near are knocked off their way and the people inside jump out.
+default("MIND_FLASH", true)
+default("MIND_FLASH_COST", 1)            -- dots
+default("MIND_FLASH_RADIUS", 900)        -- cm
+default("MIND_FLASH_STUN", 3)            -- seconds stunned
+default("MIND_FLASH_PUSH", 750)          -- knockback speed
+default("MIND_FLASH_COOLDOWN", 3)
+local function attachedTo(n)
+    local ok, par = pcall(function() return n:GetAttachParentActor() end)
+    return (ok and valid(par)) and par or nil
+end
+local function mindFlash(i, p, pawn)
+    if CFG.MIND_FLASH == false or (p.flashAt or 0) > os.clock() then return nil end
+    local c = locOf(pawn)
+    if not c then return nil end
+    if not spend(p, CFG.MIND_FLASH_COST or 1) then return nil end
+    p.flashAt = os.clock() + (CFG.MIND_FLASH_COOLDOWN or 3)
+    local R = CFG.MIND_FLASH_RADIUS or 900
+    pcall(lightningRing, function() local l = locOf(pawn); return l and { X = l.X, Y = l.Y, Z = l.Z - 40 } end, 6,
+        function() return R * 0.5 end, 0.45, 0)
+    local skip = playerKeys()
+    local cars, stunned, out = {}, 0, 0
+    for _, v in ipairs(carList()) do
+        local l = valid(v) and not skip[OK.keyOf(v)] and locOf(v)
+        if l and dist(l, c) < R + 200 then cars[OK.keyOf(v)] = { v = v, l = l } end
+    end
+    local stunFor = CFG.MIND_FLASH_STUN or 3
+    for _, n in ipairs(npcList()) do
+        if valid(n) and not skip[OK.keyOf(n)] and not (state.deadChar and state.deadChar(n)) then
+            local par = attachedTo(n)
+            local car = par and cars[OK.keyOf(par)]
+            local l = locOf(n)
+            if car then
+                -- out of the car: beside it, on their feet, and off running
+                local side = { X = car.l.X + (l and (l.X - car.l.X) or 0) * 0.2 + math.random(-1, 1) * 60, Y = car.l.Y + 220, Z = car.l.Z + 60 }
+                pcall(function() n:K2_DetachFromActor(1, 1, 1) end)
+                pcall(function() n:SetActorHiddenInGame(false) end)
+                pcall(function() n:SetActorEnableCollision(true) end)
+                moveTo(n, side)
+                pcall(function() subObj(n, "CharacterMovement"):SetMovementMode(1, 0) end)
+                makeCoward(n)
+                runAway(n, c, CFG.FEAR_SECONDS or 8)
+                mark(n, "Free Fear", CFG.FEAR_SECONDS or 8)
+                out = out + 1
+            elseif l and dist(l, c) < R then
+                local dx, dy = l.X - c.X, l.Y - c.Y
+                local d = math.max(1, math.sqrt(dx * dx + dy * dy))
+                local sp = (CFG.MIND_FLASH_PUSH or 750) * (1.3 - d / R)
+                pcall(function() n:LaunchCharacter({ X = dx / d * sp, Y = dy / d * sp, Z = 280 }, true, true) end)
+                mark(n, "Mind Flash", stunFor)
+                stunned = stunned + 1
+                after(0.5, function()
+                    if not valid(n) then return end
+                    pcall(function() subObj(n, "CharacterMovement"):DisableMovement() end)
+                    pcall(function() n:GetController().BrainComponent:StopLogic("Mind Flash") end)
+                end)
+                after(0.5 + stunFor, function()
+                    if not valid(n) or (state.deadChar and state.deadChar(n)) or isLimp(n) then return end
+                    pcall(function() subObj(n, "CharacterMovement"):SetMovementMode(1, 0) end)
+                    pcall(function() n:GetController().BrainComponent:RestartLogic() end)
+                    makeCoward(n)
+                    local me = locOf(pawn)
+                    if me then runAway(n, me, CFG.FEAR_SECONDS or 8) end
+                end)
+            end
+        end
+    end
+    -- the cars themselves: knocked off their way (they stop driving)
+    local nc = 0
+    for _, car in pairs(cars) do
+        local dx, dy = car.l.X - c.X, car.l.Y - c.Y
+        local d = math.max(1, math.sqrt(dx * dx + dy * dy))
+        fling(car.v, { X = dx / d * 400, Y = dy / d * 400, Z = 150 }, true)
+        nc = nc + 1
+    end
+    wlog("P%d Mind Flash: %d stunned, %d cars hit, %d jumped out", i, stunned, nc, out)
+    return stunned + out
+end
+state.mindFlash = mindFlash
+
+------------------------------------------------------------------------------------------
+-- Super Baller Disc: the second game's Dislocator. A purple disc skims along the ground to
+-- the person you aim at, latches on and drags them along, bowling over anyone it passes,
+-- then flings them and bounces to the next one nearby (harder with each bounce).
+default("DISC_SPEED", 1500)          -- cm/s skimming
+default("DISC_RANGE", 3000)          -- first target
+default("DISC_SWITCH_RADIUS", 1500)  -- how far it looks for the next target
+default("DISC_BOUNCES", 5)
+default("DISC_DRAG_SECONDS", 1.0)
+default("DISC_BOWL_RADIUS", 260)
+default("DISC_DAMAGE", 35)           -- per bounce, +25% every bounce
+default("DISC_SIZE", 0.9)
+local CYLINDER = "/Engine/BasicShapes/Cylinder.Cylinder"
+local function spawnDisc(at)
+    local m = StaticFindObject(CYLINDER)
+    if not valid(m) then pcall(function() m = LoadAsset(CYLINDER) end) end
+    local a = spawnMeshActor(at, valid(m) and m or sphereMesh())
+    if not a then return nil end
+    local sz = CFG.DISC_SIZE or 0.9
+    pcall(function() a:SetActorScale3D({ X = sz, Y = sz, Z = 0.08 }) end)
+    local holo = StaticFindObject("/Game/VFX/Materials/Meshes/M_Hologram_01.M_Hologram_01")
+    if valid(holo) then
+        pcall(function()
+            local mid = a.StaticMeshComponent:CreateDynamicMaterialInstance(0, holo)
+            mid:SetScalarParameterValue(FName("Hologram_Opacity"), 0.85)
+            mid:SetScalarParameterValue(FName("HoloLine_Opacity"), 1.0)
+            mid:SetScalarParameterValue(FName("Hologram_Emissive"), 25)
+            mid:SetVectorParameterValue(FName("Holo_TintColor"), PURPLE)
+            pcall(function() mid:SetVectorParameterValue(FName("Holo_BaseColor"), PURPLE) end)
+        end)
+    end
+    return a
+end
+CAST.baller = function(i, p, pc, pawn, pressed)
+    if not pressed or (p.discAt or 0) > os.clock() then return end
+    local me = locOf(pawn)
+    if not me then return end
+    if not spend(p, 2) then wlog("P%d: not enough concentration", i) return end
+    p.discAt = os.clock() + 0.8
+    local fx0, fy0 = camDir(pc)
+    local target = aimedNPC(pc, pawn, CFG.DISC_RANGE or 3000)
+    local pos = { X = me.X + fx0 * 140, Y = me.Y + fy0 * 140, Z = me.Z - 50 }
+    local disc = spawnDisc(pos)
+    if not disc then wlog("P%d Super Baller Disc: couldn't make the disc", i) return end
+    pcall(arcTo, pawn, disc, 0.35)
+    local skip = playerKeys()
+    local done = {}                      -- people it already latched on to
+    local bowled = {}                    -- key -> time last bowled
+    local hx, hy = fx0, fy0
+    local carry, bounces, spin, t0, arcAt = nil, 0, 0, os.clock(), 0
+    local speed = CFG.DISC_SPEED or 1500
+    local function nextTarget(from)
+        local best, bd = nil, CFG.DISC_SWITCH_RADIUS or 1500
+        for _, n in ipairs(npcList()) do
+            local k = valid(n) and OK.keyOf(n)
+            if k and not skip[k] and not done[k] and not (state.deadChar and state.deadChar(n)) then
+                local l = locOf(n)
+                local d = l and dist(l, from)
+                if d and d < bd and math.abs(l.Z - from.Z) < 500 then best, bd = n, d end
+            end
+        end
+        return best
+    end
+    wlog("P%d Super Baller Disc: off%s", i, target and (" at " .. OK.nameOf(target)) or "")
+    addJob("disc", function(dt2)
+        dt2 = dt2 or 0.03
+        local now = os.clock()
+        if now - t0 > 12 or not valid(disc) then return false end
+        spin = (spin + dt2 * 900) % 360
+        pcall(function() disc:K2_SetActorRotation({ Pitch = 0, Yaw = spin, Roll = 0 }, false) end)
+        if carry then
+            -- dragging: keep going the same way, the person stuck to the disc
+            carry.t = carry.t + dt2
+            pos.X, pos.Y = pos.X + hx * speed * 0.55 * dt2, pos.Y + hy * speed * 0.55 * dt2
+            moveTo(disc, pos)
+            if valid(carry.n) then moveTo(carry.n, { X = pos.X, Y = pos.Y, Z = pos.Z + 100 }) end
+            if now >= arcAt and valid(carry.n) then arcAt = now + 0.3; pcall(link, disc, carry.n, 0.3, "Super Baller Disc") end
+            -- bowling: everyone it passes gets knocked flying
+            for _, n in ipairs(npcList()) do
+                local k = valid(n) and OK.keyOf(n)
+                if k and not skip[k] and k ~= carry.k and (bowled[k] or 0) < now - 1.0 then
+                    local l = locOf(n)
+                    if l and dist(l, pos) < (CFG.DISC_BOWL_RADIUS or 260) then
+                        bowled[k] = now
+                        local dx, dy = l.X - pos.X, l.Y - pos.Y
+                        local d = math.max(1, math.sqrt(dx * dx + dy * dy))
+                        fling(n, { X = (dx / d + hx) * 700, Y = (dy / d + hy) * 700, Z = 650 }, false)
+                        hurt(n, (CFG.DISC_DAMAGE or 35) * 0.5, pawn)
+                    end
+                end
+            end
+            if carry.t >= (CFG.DISC_DRAG_SECONDS or 1.0) or not valid(carry.n) then
+                -- let go: fling them on, then bounce to the next one
+                if valid(carry.n) then
+                    pcall(function() subObj(carry.n, "CharacterMovement"):SetMovementMode(1, 0) end)
+                    fling(carry.n, { X = hx * 1200, Y = hy * 1200, Z = 900 }, false)
+                    hurt(carry.n, (CFG.DISC_DAMAGE or 35) * (1 + 0.25 * bounces), pawn)
+                end
+                carry = nil
+                bounces = bounces + 1
+                if bounces >= (CFG.DISC_BOUNCES or 5) then return false end
+                target = nextTarget(pos)
+                if not target then return false end
+            end
+            return true
+        end
+        -- skimming to the target (or straight on, picking up anyone it reaches)
+        if target and (not valid(target) or (state.deadChar and state.deadChar(target))) then target = nextTarget(pos) end
+        local tl = target and locOf(target)
+        if tl then
+            local dx, dy = tl.X - pos.X, tl.Y - pos.Y
+            local d = math.max(1, math.sqrt(dx * dx + dy * dy))
+            hx, hy = dx / d, dy / d
+            pos.Z = pos.Z + ((tl.Z - 70) - pos.Z) * math.min(1, dt2 * 6)
+            if d < 110 then
+                local k = OK.keyOf(target)
+                done[k] = true
+                carry = { n = target, k = k, t = 0 }
+                pcall(function() subObj(target, "CharacterMovement"):DisableMovement() end)
+                mark(target, "Super Baller Disc", 2)
+                return true
+            end
+        else
+            target = nextTarget(pos)
+            if target and dist(locOf(target) or pos, pos) > 500 and now - t0 > 0.3 then target = nil end
+        end
+        pos.X, pos.Y = pos.X + hx * speed * dt2, pos.Y + hy * speed * dt2
+        moveTo(disc, pos)
+        return now - t0 < (target and 12 or 3)
+    end, function() destroy(disc) end)
+end
+
 ------------------------------------------------------------------------------------------
 -- Free Fear: everyone in front of you panics and runs, soldiers and agents included
 CAST.freefear = function(i, p, pc, pawn, pressed)
@@ -2142,7 +2426,8 @@ CAST.freefear = function(i, p, pc, pawn, pressed)
     p.fearAt = os.clock() + 1.0                        -- free, but not every frame
     pcall(coneWave, pc, pawn, CFG.FREE_RANGE, 0.5, { R = 0.6, G = 0.05, B = 0.1, A = 1 })
     local hit = cone(pc, pawn, CFG.FREE_RANGE, 0.5)
-    if #hit == 0 then wlog("P%d Free Fear: nobody in front of you", i) return end
+    local flashed = mindFlash(i, p, pawn)
+    if #hit == 0 then if not flashed then wlog("P%d Free Fear: nobody in front of you", i) end return end
     for _, e in ipairs(hit) do
         local n = e.n
         makeCoward(n)
@@ -2428,6 +2713,9 @@ local function unsnatch(i, p, pawn)
         hideBody(s.n, false)
         goLimp(s.n)
     end
+    -- the snatched body's sprint off again
+    if s.walk then pcall(function() local cm = subObj(pawn, "CharacterMovement"); if cm then cm.MaxWalkSpeed = cm.MaxWalkSpeed / s.walk end end) end
+    p.powerLabel = nil
     pcall(function()
         local mental = subObj(pawn, "m_pMentalAbilityComponent")
         for _, ab in ipairs(state.p2Abilities(mental)) do
@@ -2435,6 +2723,19 @@ local function unsnatch(i, p, pawn)
         end
     end)
     wlog("P%d Body Snatch: jumped out", i)
+end
+-- Body Snatch, the second game's way: you take their look, get healed up and run faster.
+-- The disguise has its own health: it wears down over time, faster while you're wanted,
+-- and hits you take come off it instead of you. When it's gone, you're out.
+default("SNATCH_DISGUISE_SECONDS", 75)   -- how long a disguise lasts when nobody's after you
+default("SNATCH_SEEN_SECONDS", 15)       -- ...and while you're wanted
+default("SNATCH_HIT_COST", 2.0)          -- disguise lost per bit of health a hit would take
+default("SNATCH_SPRINT", 1.5)            -- run speed while snatched
+default("SNATCH_FULL_HEAL", true)
+local function wantedLevel()
+    local level = 0
+    pcall(function() level = FindFirstOf("GameStateBase"):GetAlertSystemManager():GetCurrentResponseLevelIndex() end)
+    return level or 0
 end
 CAST.bodysnatch = function(i, p, pc, pawn, pressed, held, dt)
     if p.snatch then
@@ -2450,19 +2751,46 @@ CAST.bodysnatch = function(i, p, pc, pawn, pressed, held, dt)
     local ok = cls and mental and pcall(function() mental:ActivateAbilityEffectOnTarget(cls, n) end)
     arcTo(pawn, n, 0.6)
     after(0.4, function() if valid(n) then hideBody(n, true) end end)
-    local sn = { n = n }
+    local sn = { n = n, disguise = 1.0 }
     p.snatch = sn
-    local nextDot = os.clock() + CFG.SNATCH_DOT_SECONDS
-    addJob("snatch", function()
+    local hs = OK.stat(pawn, "m_pHealthStat")
+    if CFG.SNATCH_FULL_HEAL ~= false and hs then pcall(function() OK.setRatio(hs, 1.0) end) end
+    local cm = subObj(pawn, "CharacterMovement")
+    if cm and (CFG.SNATCH_SPRINT or 1) ~= 1 then
+        local f = CFG.SNATCH_SPRINT
+        if pcall(function() cm.MaxWalkSpeed = cm.MaxWalkSpeed * f end) then sn.walk = f end
+    end
+    local lastHP = OK.healthRatio(pawn)
+    local labelAt, checkAt, wanted = 0, 0, 0
+    addJob("snatch", function(dt2)
+        dt2 = dt2 or 0.03
         if p.snatch ~= sn then return false end
         if not (valid(pawn) and valid(n)) then unsnatch(i, p, pawn) return false end
-        if os.clock() >= nextDot then
-            nextDot = os.clock() + CFG.SNATCH_DOT_SECONDS
-            if not spend(p, 1) then unsnatch(i, p, pawn) return false end
+        local now = os.clock()
+        if now >= checkAt then checkAt = now + 0.5; wanted = wantedLevel() end
+        local life = (wanted > 0) and (CFG.SNATCH_SEEN_SECONDS or 15) or (CFG.SNATCH_DISGUISE_SECONDS or 75)
+        sn.disguise = sn.disguise - dt2 / life
+        -- hits land on the disguise, not on you
+        local hp = OK.healthRatio(pawn)
+        if type(hp) == "number" and type(lastHP) == "number" and hp < lastHP - 0.001 then
+            sn.disguise = sn.disguise - (lastHP - hp) * (CFG.SNATCH_HIT_COST or 2.0)
+            if hs then pcall(function() OK.setRatio(hs, lastHP) end) end
+            hp = lastHP
+        end
+        lastHP = hp
+        if sn.disguise <= 0 then
+            wlog("P%d Body Snatch: disguise worn out", i)
+            unsnatch(i, p, pawn)
+            return false
+        end
+        if now >= labelAt then
+            labelAt = now + 0.2
+            local bars = math.max(0, math.floor(sn.disguise * 10 + 0.5))
+            p.powerLabel = "Disguise  " .. string.rep("|", bars) .. string.rep(".", 10 - bars) .. (wanted > 0 and "  (wanted!)" or "")
         end
         return true
     end)
-    wlog("P%d Body Snatch on %s (disguise: %s)", i, OK.nameOf(n), tostring(ok))
+    wlog("P%d Body Snatch on %s (look: %s, sprint x%.1f)", i, OK.nameOf(n), tostring(ok), sn.walk or 1)
 end
 
 ------------------------------------------------------------------------------------------
