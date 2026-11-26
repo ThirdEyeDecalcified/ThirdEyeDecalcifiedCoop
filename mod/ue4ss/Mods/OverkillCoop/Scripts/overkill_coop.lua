@@ -9914,6 +9914,7 @@ end)()
           set = function(v)
               if v ~= "Scan now" then return end
               refreshProjectiles()
+              if state.refreshBeams then state.refreshBeams() end
               local found = 0
               for _, w in ipairs(projWeapons()) do
                   local k = kindOf(w)
@@ -9939,6 +9940,76 @@ end)()
                 projRow(k, "NPC gun " .. k:gsub("^BP_Weapon_", ""):gsub("_C$", "") .. " shoots")
             end
         end
+    end)
+
+    -- ---------- Zap-O-Matic: any of the game's beams (TEST) ----------
+    local beamList, beamByName = { "Game default" }, {}
+    local function refreshBeams()
+        local seen = {}
+        for _, c in ipairs(FindAllOf("BlueprintGeneratedClass") or {}) do
+            if valid(c) then
+                local n = short(nameOf(c))
+                if not n:find("^Default__") and not n:find("^SKEL_") and not n:find("^REINST_") and not seen[n] then
+                    local okS, isB = pcall(function() return c:IsChildOf(StaticFindObject("/Script/BFGCore.BFGProjectile_Beam")) end)
+                    if okS and isB then seen[n] = true; beamByName[n] = c end
+                end
+            end
+        end
+        local names = {}
+        for n in pairs(seen) do names[#names + 1] = n end
+        table.sort(names)
+        for i = #beamList, 2, -1 do beamList[i] = nil end
+        for _, n in ipairs(names) do beamList[#beamList + 1] = n end
+    end
+    state.refreshBeams = refreshBeams
+    local beamChoice, beamOrig, beamMade = "Game default", {}, {}
+    local function zaps()
+        local out = {}
+        for _, pc in ipairs({ player1Controller(), state.p2 }) do
+            if valid(pc) then
+                local eq = subObj(getPawn(pc), "m_pEquipmentManagerComponent")
+                pcall(function()
+                    for _, w in ipairs(arrayToList(eq.m_aWeaponList)) do
+                        if valid(w) and nameOf(w):find("Zap%-O%-Matic") then out[#out + 1] = w end
+                    end
+                end)
+            end
+        end
+        return out
+    end
+    local function applyBeam(w)
+        local wk = keyOf(w)
+        if beamChoice == "Game default" then
+            if beamOrig[wk] and valid(beamOrig[wk]) then
+                pcall(function() w.m_pBeam = beamOrig[wk] end)
+                if beamMade[wk] and valid(beamMade[wk]) then pcall(function() beamMade[wk]:K2_DestroyActor() end) end
+            end
+            beamOrig[wk], beamMade[wk] = nil, nil
+            return
+        end
+        local cls = beamByName[beamChoice]
+        if not valid(cls) then return end
+        if beamMade[wk] and valid(beamMade[wk]) and beamMade[wk]:GetClass() == cls then return end
+        if not beamOrig[wk] then pcall(function() beamOrig[wk] = w.m_pBeam end) end
+        if beamMade[wk] and valid(beamMade[wk]) then pcall(function() beamMade[wk]:K2_DestroyActor() end) end
+        local okL, loc = pcall(function() return w:K2_GetActorLocation() end)
+        local okS, b = pcall(function() return getWorld():SpawnActor(cls, okL and loc or { X = 0, Y = 0, Z = 0 }, { Pitch = 0, Yaw = 0, Roll = 0 }) end)
+        if not (okS and valid(b)) then log("Zap beam: couldn't make %s", beamChoice) return end
+        pcall(function() b:SetOwner(w) end)
+        pcall(function() b.Instigator = w.m_pHolder end)
+        pcall(function() b:K2_AttachToActor(w, FName("None"), 1, 1, 1, false) end)
+        pcall(function() w.m_pBeam = b end)
+        beamMade[wk] = b
+        log("Zap beam: %s now uses %s", shortName(w), beamChoice)
+    end
+    onWorldChange(function() beamOrig, beamMade = {}, {} end)
+    add({ key = "zapbeam", page = PAGE_PROJ, label = "TEST  Zap-O-Matic beam (both players)", options = beamList,
+          show = function() if #beamList == 1 then refreshBeams() end return true end,
+          get = function() return beamChoice end,
+          set = function(v) beamChoice = v; for _, w in ipairs(zaps()) do pcall(applyBeam, w) end end })
+    addTickJob("zapBeamKeep", 2.0, function()
+        if beamChoice == "Game default" then return end
+        for _, w in ipairs(zaps()) do pcall(applyBeam, w) end
     end)
 
     -- ---------- upgrades (this session only) ----------
