@@ -84,7 +84,6 @@ local CFG = {
 
     -- Swap which character the gamepad/keyboard drives (Ctrl+X, or hold this gamepad combo).
     SWAP_COMBO_ENABLED = false,       -- old workaround from before pad 2 worked; off now that both pads are real
-    LOCK_REPORT = false,              -- (testing) write dump_marker.txt once while Player 1 zaps
     ALL_DEV_KEYS = false,             -- true = also the old experiment / diagnostic shortcuts
     SWAP_PAD_COMBO = { "Gamepad_LeftThumbstick", "Gamepad_RightThumbstick" },  -- L3 + R3
     SWAP_HOLD_SECONDS = 0.7,
@@ -139,7 +138,10 @@ local CFG = {
     WEAPON_ICON_FIX = true,
     P2_LOCK_RANGE = 3500,             -- how far (cm) Player 2's yellow lock-on reaches
     P2_LOCK_COS = 0.975,              -- how close to the crosshair a target must be (0.975 = about 13 degrees)
-    P2_LOCK_REAL = true,
+    P2_LOCK_REAL = false,             -- (test: off) the mod no longer writes Player 2's lock into the game
+    P2_GUN_FOLLOW_GAME = true,        -- Player 2's cyan bracket uses the game's own lock when it has one
+    P2_PK_AIM_WIDEN = 2.0,            -- Player 2's PK reach to the sides (the game's auto-target area x this)
+    P2_TARGET_HEALTH = true,          -- Player 2 sees the health bar of what its gun is locked on to
     P2_ZAP_CHAIN = true,
     P2_ZAP_BRACKET = true,
     P2_ZAP_ARCS = true,               -- draw the arcs of Player 2's zap chain with the game's beam effect            -- Player 2's cyan Zap-O-Matic bracket placed from Player 2's own view              -- Player 2's Zap-O-Matic arcs to the people next to its target
@@ -161,7 +163,6 @@ local CFG = {
     P2_PK_USES_LOCK = false,          -- (off: setting PK's grab target crashed the game)
     ZAP_WATCH = true,                 -- log the Zap-O-Matic's locked targets while zapping (temporary)              -- Player 2's yellow lock is also the lock PK and the Zap-O-Matic use
     P2_MARKER_FOLLOW = true,          -- put Player 2's yellow lock-on marker over Player 2's target every frame           -- show each player's own equipped weapon in their HUD's big weapon icon
-    MARKER_WATCH = false,
     ALERT_WATCH = false,              -- debug: log the alert system twice a second (slow, off for play)
     ALERT_CARD_HOOK = true,           -- co-op: never let the "!!" card drop while the seen hold is on
     ALERT_SEEN_HOLD = 3.0,            -- co-op: keep the "!!" seen card up this many seconds after last being seen               -- log the "!!" alert state in co-op (for bug hunting)
@@ -4813,7 +4814,11 @@ do
                                 -- reach; the Zap-O-Matic only the living, within the beam's reach
                                 local score = (1 - cosA) * 8 + dMe / CFG.P2_LOCK_RANGE
                                 if (not bestScore or score < bestScore) and dMe <= pkRange and state.p2PKAble(c) then best, bestScore = c, score end
-                                if (not aliveScore or score < aliveScore) and dMe <= (state.p2WeaponLockRange or CFG.P2_ZAP_LOCK_RANGE) and not state.deadChar(c) then alive, aliveScore = c, score end
+                                if (not aliveScore or score < aliveScore) and dMe <= (state.p2WeaponLockRange or CFG.P2_ZAP_LOCK_RANGE) and not state.deadChar(c) then
+                                    -- not through walls
+                                    local okS, seen = pcall(function() return state.p2:LineOfSightTo(c, cam, false) end)
+                                    if not okS or seen ~= false then alive, aliveScore = c, score end
+                                end
                             end
                         end
                     end
@@ -4919,7 +4924,14 @@ do
                     nm(okH and hov or nil), nm(gameAim), nm(okF and f0 or nil), nm(tgt), nm(aliveTgt))
             end
         end
-        state.p2Lock = aliveTgt
+        -- the gun's lock: the game's own for Player 2 when it has one (read before anything is
+        -- written), else the mod's pick
+        do
+            local okG, g = pcall(function() return focus and focus.m_pCurrentAutoLockTarget end)
+            state.p2GameGun = (okG and valid(g) and keyOf(g) ~= keyOf(pawn) and not state.notTargetable(g)) and g or nil
+        end
+        state.p2ModLock = aliveTgt
+        state.p2Lock = (CFG.P2_GUN_FOLLOW_GAME and state.p2GameGun) or aliveTgt
         state.p2PKLock = tgt
         if CFG.P2_LOCK_REAL then
             if tgt then
@@ -5479,149 +5491,6 @@ do
     end)
 end
 
--- Lock-on marker report (temporary): writes dump_marker.txt with the state of both players'
--- yellow lock-on markers and their pieces, taken while Player 1 is locked on to something
--- (so Player 1's yellow arcs are showing). Done once automatically; Ctrl+Shift+K redoes it.
-do
-    local SIMPLE = { BoolProperty = true, FloatProperty = true, IntProperty = true, ByteProperty = true,
-                     EnumProperty = true, ObjectProperty = true, NameProperty = true, DoubleProperty = true }
-    local function vals(lines, label, obj)
-        lines[#lines + 1] = "######## " .. label .. " ########"
-        if not valid(obj) then lines[#lines + 1] = "(nil)" return end
-        lines[#lines + 1] = "object: " .. nameOf(obj)
-        local function q(name, f)
-            local ok, v = pcall(f)
-            if ok then
-                if type(v) == "userdata" then
-                    local t = {}
-                    for _, k in ipairs({ "X", "Y", "Z", "R", "G", "B", "A" }) do
-                        local okK, kv = pcall(function() return v[k] end)
-                        if okK and type(kv) == "number" then t[#t + 1] = k .. "=" .. string.format("%.3f", kv) end
-                    end
-                    if #t > 0 then v = table.concat(t, " ") elseif v.IsValid and v:IsValid() then v = nameOf(v) end
-                end
-                lines[#lines + 1] = "  = " .. name .. ": " .. tostring(v)
-            end
-        end
-        q("Visibility", function() return obj:GetVisibility() end)
-        q("IsVisible", function() return obj:IsVisible() end)
-        q("IsInViewport", function() return obj:IsInViewport() end)
-        q("RenderOpacity", function() return obj:GetRenderOpacity() end)
-        q("DesiredSize", function() return obj:GetDesiredSize() end)
-        q("ColorAndOpacity", function() return obj.ColorAndOpacity.SpecifiedColor end)
-        q("ColorAndOpacity2", function() return obj.ColorAndOpacity end)
-        q("RenderScale", function() return obj.RenderTransform.Scale end)
-        q("BrushSize", function() return obj.Brush.ImageSize end)
-        q("BrushResource", function() return obj.Brush.ResourceObject end)
-        q("OwningPlayer", function() return obj:GetOwningPlayer() end)
-        q("Slot", function() return obj.Slot end)
-        local okC, c = pcall(function() return obj:GetClass() end)
-        local depth = 0
-        while okC and valid(c) and depth < 6 do
-            local cn = nameOf(c)
-            lines[#lines + 1] = "## " .. cn
-            if cn:find("/Script/UMG%.") or cn:find("/Script/Engine%.") or cn:find("/Script/CoreUObject%.") then break end
-            pcall(function()
-                c:ForEachProperty(function(pp)
-                    local pn = pp:GetFName():ToString()
-                    local pt = pp:GetClass():GetFName():ToString()
-                    if SIMPLE[pt] then
-                        local okV, v = pcall(function() return obj[pn] end)
-                        if okV then
-                            if type(v) == "userdata" then
-                                local okN, n = pcall(function() return v:IsValid() and nameOf(v) or "nil" end)
-                                v = okN and n or "?"
-                            end
-                            lines[#lines + 1] = "  " .. pt .. " " .. pn .. " = " .. tostring(v)
-                        end
-                    else
-                        lines[#lines + 1] = "  " .. pt .. " " .. pn
-                    end
-                end)
-            end)
-            pcall(function() c:ForEachFunction(function(f) lines[#lines + 1] = "  F " .. f:GetFName():ToString() end) end)
-            local okS, sup = pcall(function() return c:GetSuperStruct() end)
-            if not okS then break end
-            c = sup
-            depth = depth + 1
-        end
-    end
-    local function markerReport(why)
-        local lines = { "why: " .. why }
-        for i, pc in ipairs({ player1Controller(), state.p2 }) do
-            local pawn = getPawn(pc)
-            local mental = subObj(pawn, "m_pMentalAbilityComponent")
-            local focus = subObj(pawn, "m_pFocusComponent")
-            local mk = mental and subObj(mental, "m_pTargetMarker")
-            vals(lines, "P" .. i .. " marker", mk)
-            if mk then
-                for _, part in ipairs({ "Blip", "Image_146" }) do vals(lines, "P" .. i .. " marker." .. part, subObj(mk, part)) end
-            end
-            vals(lines, "P" .. i .. " focus component", focus)
-            vals(lines, "P" .. i .. " mental component", mental)
-        end
-        local gs = FindFirstOf("GameStateBase")
-        local okM, mgr = pcall(function() return gs:GetHighlightableSceneObjectManager() end)
-        if okM and valid(mgr) then
-            vals(lines, "focus manager", mgr)
-            vals(lines, "focus manager.m_pHighlighterHUD", subObj(mgr, "m_pHighlighterHUD"))
-        end
-        for i, pc in ipairs({ player1Controller(), state.p2 }) do
-            for _, hud in ipairs(hudWidgetsOf(pc)) do
-                local hl = subObj(hud, "BPW_UI_HUD_SceneObjectHighlighter")
-                if hl then
-                    vals(lines, "P" .. i .. " HUD highlighter (" .. shortName(hud) .. ")", hl)
-                    local okA, arr = pcall(function() return hl.m_apHighlighters end)
-                    for j, h in ipairs(okA and arrayToList(arr) or {}) do
-                        if j <= 6 then vals(lines, "P" .. i .. " highlighter[" .. j .. "]", h) end
-                    end
-                end
-            end
-            local eq = subObj(getPawn(pc), "m_pEquipmentManagerComponent")
-            local okW, w = pcall(function() return eq:GetCurrentWeapon() end)
-            if not (okW and valid(w)) then
-                okW, w = pcall(function() return arrayToList(eq:GetCurrentWeapons())[1] end)
-            end
-            if okW and valid(w) then
-                vals(lines, "P" .. i .. " weapon", w)
-                vals(lines, "P" .. i .. " weapon crosshair", subObj(w, "m_CrosshairInstance"))
-                vals(lines, "P" .. i .. " weapon target component", subObj(w, "m_pOwnerTargetComponent"))
-                vals(lines, "P" .. i .. " weapon beam", subObj(w, "m_pBeam"))
-                local bm = subObj(w, "m_pBeam")
-                vals(lines, "P" .. i .. " weapon beam effect", bm and subObj(bm, "BeamEffect"))
-            end
-            vals(lines, "P" .. i .. " GameplayToHud", subObj(pc, "m_pGameplayToHud"))
-        end
-        writeDumpFile("marker", lines)
-        log("Lock-on marker report written (dump_marker.txt): %s", why)
-    end
-    local done, lockedSince = false, nil
-    onWorldChange(function() lockedSince = nil end); state.onP2Leave(function() lockedSince = nil end)
-    addTickJob("markerReport", 0.25, function()
-        if not CFG.LOCK_REPORT then return end
-        if done or not valid(state.p2) then lockedSince = nil return end
-        -- Player 1 zapping something (so Player 1's lock and chain are in use)
-        local t = nil
-        pcall(function()
-            local eq = subObj(getPawn(player1Controller()), "m_pEquipmentManagerComponent")
-            local okW, w = pcall(function() return eq:GetCurrentWeapon() end)
-            if not (okW and valid(w)) then w = arrayToList(eq:GetCurrentWeapons())[1] end
-            if valid(w) and w:IsShooting() then
-                local l = arrayToList(w.m_apCurrentLockedTargets)
-                if valid(l[1]) then t = l[1] end
-            end
-        end)
-        if not t then lockedSince = nil return end
-        lockedSince = lockedSince or os.clock()
-        if os.clock() - lockedSince > 1.0 then
-            done = true
-            markerReport("automatic, Player 1 zapping " .. shortName(t))
-        end
-    end)
-    RegisterKeyBind(Key.K, { ModifierKey.CONTROL, ModifierKey.SHIFT }, function()
-        runGame("markerReport", function() markerReport("Ctrl+Shift+K") end)
-    end)
-end
 
 -- Weapon wheel off in split screen (it's one shared wheel; tapping to switch weapons still
 -- works). If either player opens it, it is closed again straight away.
@@ -5780,37 +5649,6 @@ do
     end)
 end
 
--- One-time dump of the weapon slot's pieces (the big icon lives in one of them), so the icon
--- can be driven per player. Writes dump_weaponslot.txt next to the game exe.
-do
-    local done = false
-    addTickJob("weaponSlotDump", 2.0, function()
-        if done or not valid(state.p2) then return end
-        for _, hud in ipairs(hudWidgetsOf(player1Controller())) do
-            local slotW = subObj(hud, "BPW_UI_Slot_Weapon")
-            if slotW then
-                done = true
-                local lines = {}
-                appendClassDump(lines, "slot.m_pActiveSlot", subObj(slotW, "m_pActiveSlot"))
-                local okQ, q = pcall(function() return arrayToList(slotW.m_apQuickSlots) end)
-                q = okQ and q or {}
-                lines[#lines + 1] = "#### m_apQuickSlots: " .. #q
-                for i, w in ipairs(q) do lines[#lines + 1] = "  [" .. i .. "] " .. (valid(w) and nameOf(w) or "?") end
-                if valid(q[1]) then appendClassDump(lines, "m_apQuickSlots[1]", q[1]) end
-                local okW, qw = pcall(function() return arrayToList(slotW.QuickSlotWidgets) end)
-                qw = okW and qw or {}
-                lines[#lines + 1] = "#### QuickSlotWidgets: " .. #qw
-                for i, w in ipairs(qw) do lines[#lines + 1] = "  [" .. i .. "] " .. (valid(w) and nameOf(w) or "?") end
-                appendClassDump(lines, "SB_ActiveSlot", subObj(slotW, "SB_ActiveSlot"))
-                local okA, a = pcall(function() return slotW.SB_ActiveSlot:GetChildAt(0) end)
-                lines[#lines + 1] = "#### SB_ActiveSlot child 0: " .. (okA and valid(a) and nameOf(a) or "none")
-                if okA and valid(a) then appendClassDump(lines, "SB_ActiveSlot child", a) end
-                writeDumpFile("weaponslot", lines)
-                break
-            end
-        end
-    end)
-end
 
 -- Player 2's probe gun: a missed probe is meant to come back after a short reload timer,
 -- but for Player 2 it never does, so the gun runs dry. When it sits empty with nothing in
@@ -6109,61 +5947,6 @@ do
     end)
 end
 
--- Lock-on marker watch: logs both players' yellow markers whenever something about them
--- changes (shown/hidden, owner, on screen, property values), so P2's can be matched to P1's.
-do
-    local last, count = {}, {}
-    local function describe(obj)
-        local parts = {}
-        local okC, c = pcall(function() return obj:GetClass() end)
-        local depth = 0
-        while okC and valid(c) and depth < 4 do
-            local cn = nameOf(c)
-            if cn:find("/Script/UMG%.") or cn:find("/Script/Engine%.") then break end
-            pcall(function()
-                c:ForEachProperty(function(p)
-                    local pn = p:GetFName():ToString()
-                    if pn ~= "UberGraphFrame" and not pn:find("^K2Node") and not pn:find("^CallFunc") and not pn:find("^Temp_") then
-                        local okV, v = pcall(function() return obj[pn] end)
-                        if okV then
-                            local t = type(v)
-                            if t == "number" then parts[#parts + 1] = string.format("%s=%.2f", pn, v)
-                            elseif t == "boolean" then parts[#parts + 1] = pn .. "=" .. tostring(v)
-                            elseif t == "userdata" then
-                                if valid(v) then parts[#parts + 1] = pn .. "=" .. shortName(v) end
-                            end
-                        end
-                    end
-                end)
-            end)
-            local okS, sup = pcall(function() return c:GetSuperStruct() end)
-            if not okS then break end
-            c = sup
-            depth = depth + 1
-        end
-        return table.concat(parts, " ")
-    end
-    addTickJob("markerWatch", 0.5, function()
-        if not (CFG.MARKER_WATCH and valid(state.p2)) then return end
-        for i, pc in ipairs({ player1Controller(), state.p2 }) do
-            local mental = subObj(getPawn(pc), "m_pMentalAbilityComponent")
-            local mk = mental and subObj(mental, "m_pTargetMarker")
-            if mk then
-                local okV, vis = pcall(function() return mk:IsVisible() end)
-                local okI, inVp = pcall(function() return mk:IsInViewport() end)
-                local okO, owner = pcall(function() return mk:GetOwningPlayer() end)
-                local line = string.format("visible=%s inViewport=%s owner=%s | %s",
-                    okV and tostring(vis) or "?", okI and tostring(inVp) or "?",
-                    okO and valid(owner) and shortName(owner) or "?", describe(mk))
-                if last[i] ~= line and (count[i] or 0) < 60 then
-                    last[i] = line
-                    count[i] = (count[i] or 0) + 1
-                    log("Marker P%d %s: %s", i, shortName(mk), line)
-                end
-            end
-        end
-    end)
-end
 
 state.dotTurn = CFG.RADAR_DOT_TURN
 state.dotMirror = CFG.RADAR_DOT_MIRROR
@@ -9444,7 +9227,7 @@ OverkillCoop = {
             end
         end
         if valid(state.p2) then
-            parts[#parts + 1] = string.format("| P2 arcs=%s", nm(state.p2PKLock))
+            parts[#parts + 1] = string.format("| P2 arcs=%s bracket=%s (game %s, mod %s)", nm(state.p2PKLock), nm(state.p2Lock), nm(state.p2GameGun), nm(state.p2ModLock))
         end
         local line = table.concat(parts, "  ")
         local now = os.clock()
@@ -9467,6 +9250,74 @@ OverkillCoop = {
                     if pad then state.snapshot("Guide button, pad " .. pad) end
                 end
             end
+        end
+    end)
+end)()
+
+-- Player 2's PK reach to the sides, and the health bar of Player 2's gun target
+;(function()
+    local widened = {}
+    onWorldChange(function() widened = {} end)
+    addTickJob("p2PKWiden", 2.0, function()
+        if not valid(state.p2) then return end
+        local mental = subObj(getPawn(state.p2), "m_pMentalAbilityComponent")
+        local k = mental and keyOf(mental)
+        if not k or widened[k] then return end
+        local ok, v = pcall(function() return mental.m_fMaxRangeAutoTargetPercent2D end)
+        if ok and type(v) == "number" and v > 0 then
+            widened[k] = true
+            local nv = v * CFG.P2_PK_AIM_WIDEN
+            pcall(function() mental.m_fMaxRangeAutoTargetPercent2D = nv end)
+            log("P2 PK reach to the sides: %.3f -> %.3f", v, nv)
+        end
+    end)
+
+    -- Each person's health bar is a screen widget on that person, drawn for one player only
+    -- (Player 1 by default), so Player 2 never saw one. While Player 2's gun is locked on to
+    -- someone Player 1 isn't, their bar is handed to Player 2's screen, and back afterwards.
+    local cur, curComp, wcClass = nil, nil, nil
+    local function healthComp(actor)
+        wcClass = wcClass or StaticFindObject("/Script/UMG.WidgetComponent")
+        if not wcClass then return nil end
+        local found = nil
+        pcall(function()
+            local list = actor:K2_GetComponentsByClass(wcClass)
+            for _, c in ipairs(arrayToList(list)) do
+                local okW, w = pcall(function() return c:GetUserWidgetObject() end)
+                if okW and valid(w) and nameOf(w):find("HealthIndicator") then found = c break end
+            end
+        end)
+        return found
+    end
+    local function giveBack()
+        if curComp and valid(curComp) then
+            pcall(function() curComp:SetOwnerPlayer(player1Controller().Player) end)
+            pcall(function() curComp:GetUserWidgetObject():HideWidget() end)
+        end
+        cur, curComp = nil, nil
+    end
+    onWorldChange(function() cur, curComp = nil, nil end); state.onP2Leave(giveBack)
+    addTickJob("p2TargetHealth", 0.1, function()
+        if not (CFG.P2_TARGET_HEALTH and valid(state.p2)) then if cur then giveBack() end return end
+        local t = state.p2Lock
+        if not (valid(t) and not state.deadChar(t)) then if cur then giveBack() end return end
+        -- Player 1 is looking at the same one: leave it on Player 1's screen
+        local p1f = subObj(getPawn(player1Controller()), "m_pFocusComponent")
+        local okP, p1t = pcall(function() return p1f and p1f.m_pCurrentAutoLockTarget end)
+        if okP and valid(p1t) and keyOf(p1t) == keyOf(t) then if cur then giveBack() end return end
+        if cur ~= keyOf(t) then
+            giveBack()
+            local c = healthComp(t)
+            if not c then cur = keyOf(t) return end
+            cur, curComp = keyOf(t), c
+            local okO = pcall(function() c:SetOwnerPlayer(state.p2.Player) end)
+            pcall(function() c:GetUserWidgetObject():ShowWidget() end)
+            if not state.p2HealthLogged then
+                state.p2HealthLogged = true
+                log("P2 target health bar: %s handed to Player 2 (%s)", shortName(t), okO and "ok" or "failed")
+            end
+        elseif curComp and valid(curComp) then
+            pcall(function() curComp:SetVisibility(true, false) end)
         end
     end)
 end)()
