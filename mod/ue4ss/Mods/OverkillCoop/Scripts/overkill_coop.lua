@@ -3846,6 +3846,8 @@ state.snapshot = function(why)
             end
         end
     end)
+    pcall(state.populationReport)
+    pcall(state.radarReport)
     log("===== end of snapshot %d =====", state.snapN)
 end
 -- things the lock-ons must never pick: the players' saucer (its landing light), any player
@@ -5486,6 +5488,18 @@ do
                 if copy and not valid(copy) then copy = nil end
             end
             state.p2BracketClass = cn
+            -- the Ion Detonator's (and the probe's) own reticle works on Player 2's half as it is:
+            -- no copy for those (the copy of the Ion one showed on Player 1's screen)
+            if cn and not (cn:find("ZapOMatic") or cn:find("Disintegrator")) then
+                if copy and valid(copy) then pcall(function() copy:SetVisibility(1) end) end
+                copy = nil
+                if game and state.p2OwnReticleFor ~= keyOf(game) then
+                    state.p2OwnReticleFor = keyOf(game)
+                    pcall(function() game:SetRenderOpacity(1.0) end)
+                    pcall(function() game:SetVisibility(4) end)
+                end
+                return
+            end
         end
         -- the game's own lock for Player 2's gun (the Zap-O-Matic picks its own, correctly)
         do
@@ -9560,7 +9574,13 @@ end)()
         local pawn = getPawn(state.p2)
         local eq = subObj(pawn, "m_pEquipmentManagerComponent")
         local okW, w = pcall(function() return eq:GetCurrentWeapon() end)
-        if not (okW and valid(w) and nameOf(w):find("Zap")) then return end
+        if not (okW and valid(w)) then
+            pcall(function() w = arrayToList(eq:GetCurrentWeapons())[1] end)
+        end
+        if not (valid(w) and nameOf(w):find("Zap")) then
+            if not state.zapNoPropWhy and valid(w) then state.zapNoPropWhy = true; log("P2 zap side limit: weapon in hand is %s", shortName(w)) end
+            return
+        end
         local mental = subObj(pawn, "m_pMentalAbilityComponent")
         local okA, t = pcall(function() return mental and mental.m_pCurrentAimTarget end)
         if not (okA and valid(t)) then return end
@@ -9583,7 +9603,116 @@ end)()
         end)
         if (okC and not isChar) or tooWide then
             pcall(function() mental.m_pCurrentAimTarget = nil end)
-            if not state.zapPropLogged then state.zapPropLogged = true; log("P2 zap: ignored a prop as the shared aim target (%s)", shortName(t)) end
+            state.zapIgnored = (state.zapIgnored or 0) + 1
+            if state.zapIgnored <= 5 then log("P2 zap: ignored %s as the zap's target (%s)", shortName(t), tooWide and "too far to the side" or "a prop") end
         end
     end)
 end)()
+
+-- Snapshot extras: who and what is around each player (for the LOD / spawning tests), and
+-- what each player's radar is tied to
+state.populationReport = function()
+    if not valid(state.p2) then return end
+    local pcs = { player1Controller(), state.p2 }
+    local pawns, locs = {}, {}
+    for i, pc in ipairs(pcs) do
+        pawns[i] = getPawn(pc)
+        local ok, l = pcall(function() return pawns[i]:K2_GetActorLocation() end)
+        locs[i] = ok and l or nil
+    end
+    if not (locs[1] and locs[2]) then return end
+    local function dist(a, b) return math.sqrt((a.X - b.X) ^ 2 + (a.Y - b.Y) ^ 2 + (a.Z - b.Z) ^ 2) end
+    -- how the players stand to each other
+    local apart = dist(locs[1], locs[2]) / 100
+    local function facing(i, j)
+        local ok, r = pcall(function() return pcs[i].PlayerCameraManager:GetCameraRotation() end)
+        if not ok then return "?" end
+        local yaw = math.rad(r.Yaw)
+        local dx, dy = locs[j].X - locs[i].X, locs[j].Y - locs[i].Y
+        local len = math.max(1, math.sqrt(dx * dx + dy * dy))
+        local cosA = (math.cos(yaw) * dx + math.sin(yaw) * dy) / len
+        return string.format("%.0f deg", math.deg(math.acos(math.max(-1, math.min(1, cosA)))))
+    end
+    local okS, seen = pcall(function() return pcs[1]:LineOfSightTo(pawns[2], { X = 0, Y = 0, Z = 0 }, false) end)
+    log("  players: %.0f m apart | P1 looks %s away from P2, P2 looks %s away from P1 | clear line between them: %s",
+        apart, facing(1, 2), facing(2, 1), okS and tostring(seen) or "?")
+    -- people and cars around each player
+    local chars, cars = {}, {}
+    pcall(function()
+        local out = {}
+        getStatics():GetAllActorsOfClass(getWorld(), StaticFindObject("/Script/Engine.Character"), out)
+        for _, a in ipairs(out) do
+            local v = a
+            if type(a) == "userdata" and not valid(a) then pcall(function() v = a:get() end) end
+            if valid(v) and not state.notTargetable(v) then chars[#chars + 1] = v end
+        end
+    end)
+    for _, cn in ipairs({ "BP_BasicVehicle_C", "BP_BasicVehicle_Police_C" }) do
+        for _, v in ipairs(FindAllOf(cn) or {}) do if valid(v) then cars[#cars + 1] = v end end
+    end
+    local rings = { 30, 60, 120 }
+    for i = 1, 2 do
+        local cP, cH, vP, vE = { 0, 0, 0 }, { 0, 0, 0 }, { 0, 0, 0 }, { 0, 0, 0 }
+        for _, c in ipairs(chars) do
+            local okL, l = pcall(function() return c:K2_GetActorLocation() end)
+            if okL and l and not state.deadChar(c) then
+                local d = dist(l, locs[i]) / 100
+                local okH, hid = pcall(function() return c.bHidden end)
+                for r, m in ipairs(rings) do
+                    if d <= m then
+                        cP[r] = cP[r] + 1
+                        if okH and hid then cH[r] = cH[r] + 1 end
+                    end
+                end
+            end
+        end
+        for _, v in ipairs(cars) do
+            local okL, l = pcall(function() return v:K2_GetActorLocation() end)
+            if okL and l then
+                local d = dist(l, locs[i]) / 100
+                local riders = 0
+                pcall(function()
+                    local out = {}
+                    v:GetAttachedActors(out)
+                    for _, x in ipairs(out) do
+                        local okC, isC = pcall(function() return x:IsA(StaticFindObject("/Script/Engine.Character")) end)
+                        if okC and isC then riders = riders + 1 end
+                    end
+                end)
+                for r, m in ipairs(rings) do
+                    if d <= m then
+                        vP[r] = vP[r] + 1
+                        if riders == 0 then vE[r] = vE[r] + 1 end
+                    end
+                end
+            end
+        end
+        log("  around P%d (30 / 60 / 120 m): people %d/%d/%d (hidden %d/%d/%d) | cars %d/%d/%d (no one inside %d/%d/%d)",
+            i, cP[1], cP[2], cP[3], cH[1], cH[2], cH[3], vP[1], vP[2], vP[3], vE[1], vE[2], vE[3])
+    end
+end
+
+state.radarReport = function()
+    for i, pc in ipairs({ player1Controller(), state.p2 }) do
+        if valid(pc) then
+            for _, hud in ipairs(hudWidgetsOf(pc)) do
+                local mm = subObj(hud, "BPW_UI_Minimap")
+                local radar = mm and subObj(mm, "BPW_UI_HUDRadar")
+                if radar then
+                    local bits = {}
+                    forEachObjectProperty(radar, function(name)
+                        local okV, v = pcall(function() return radar[name] end)
+                        if okV and valid(v) then
+                            local n = shortName(v)
+                            if n:find("Player") or n:find("Controller") or n:find("Camera") or n:find("Pawn") or n:find("Radar") or n:find("Hud") or n:find("HUD") then
+                                bits[#bits + 1] = name .. "=" .. n
+                            end
+                        end
+                    end)
+                    local okO, own = pcall(function() return radar:GetOwningPlayer() end)
+                    log("  radar on P%d's HUD (%s): owner %s | %s", i, shortName(hud), (okO and valid(own)) and shortName(own) or "-", table.concat(bits, ", "))
+                end
+            end
+        end
+    end
+end
