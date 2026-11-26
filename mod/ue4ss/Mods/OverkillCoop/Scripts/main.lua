@@ -8,6 +8,7 @@
       overkill_pk.lua        PK overhaul (settings in overkill_pk_settings.lua)
       overkill_padlink.lua   tells the controller DLL (xinput1_3/1_4/9_1_0.dll) about the game
       overkill_extras.lua    extra trainer options
+      overkill_map.lua       the aerial map with pins (Trainer > World)
       overkill_wheel.lua     the mind & weapons wheel (hold LB), the power panel and the mind powers
       overkill_jukebox.lua   the radio stations in the trainer (game music or the mod's songs)
       overkill_party.lua     Players 3 and 4 (groundwork)
@@ -26,6 +27,7 @@ RegisterKeyBind = realBind
 load("overkill_pk")
 load("overkill_padlink")
 load("overkill_extras")
+load("overkill_map")
 load("overkill_wheel")
 load("overkill_jukebox")
 load("overkill_party")

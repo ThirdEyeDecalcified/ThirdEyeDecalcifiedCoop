@@ -1,0 +1,1 @@
+# map  a(real) a(imag) b(real) b(imag): picture pixel = a * (X + iY) + b

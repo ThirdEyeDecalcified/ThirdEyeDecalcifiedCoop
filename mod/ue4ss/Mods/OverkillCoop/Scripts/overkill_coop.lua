@@ -8860,6 +8860,7 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
         menu = nil
         log("Trainer menu closed")
     end
+    state.trainerCloseMenu = closeMenu
 
     local function highlight()
         if not menu then return end
