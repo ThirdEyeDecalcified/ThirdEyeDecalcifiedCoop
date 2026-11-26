@@ -68,6 +68,7 @@ default("MARK_HEIGHT", 120)           -- how far above their middle it floats (c
 default("MARK_RANGE", 4000)           -- shown within this distance
 default("MARK_MAX", 10)               -- most icons at once per screen
 default("WHEEL_PROTECT", true)         -- invincible and unseen while the LB menu is open
+default("FREE_LOVE_SPLIT", true)      -- Free Love with Player 2 in too (its party / hearts extras stay single player)
 default("FREE_RANGE", 2600)           -- how far Free Love / Free Fear reach (cm)
 default("FEAR_SECONDS", 10)           -- how long Free Fear lasts
 default("WAVE_ORBS", 9)               -- orbs in the cone wave
@@ -110,19 +111,19 @@ local POWERS = {
     { name = "Lock-on",            cost = "free",      ready = true,  desc = "The game's normal LT lock-on." },
     { name = "Free Love",          cost = "free",         ready = true, beta = true, cast = "freelove",
       desc = "LT: everyone in front of you dances. Enough dancers clear the wanted level (more the higher it is)." },
-    { name = "Free Fear",          cost = "free",         ready = false, beta = true, cast = "freefear",
+    { name = "Free Fear",          cost = "free",         ready = true, beta = true, cast = "freefear",
       desc = "LT: instant terror. Everyone in front of you, soldiers and agents too, drops the fight and runs." },
     { name = "Riot Hysteria",     cost = "2",         ready = true, beta = true, cast = "hysteria",
       desc = "LT: drive someone berserk. They lash out at whoever is nearest, and anyone they hurt catches it too." },
-    { name = "Body Snatch",        cost = "1 + drain", ready = false, beta = true, cast = "bodysnatch",
+    { name = "Body Snatch",        cost = "1 + drain", ready = true, beta = true, cast = "bodysnatch",
       desc = "LT on someone: take their body (they vanish). Drains a dot every few seconds. LT again to jump out." },
     { name = "Cryokinesis",        cost = "1 per second", ready = true, beta = true, cast = "cryo",
       desc = "Hold LT: a freezing cone slows people, then freezes them solid. Shoot a frozen one to shatter it." },
     { name = "Pyrokinesis",        cost = "2",         ready = true, beta = true, cast = "pyro",
       desc = "LT: set the person in front of you ablaze. They run screaming, and anyone they touch catches fire too." },
-    { name = "Mutant Shockwave",   cost = "2-3",       ready = false, beta = true, cast = "shockwave",
+    { name = "Mutant Shockwave",   cost = "2-3",       ready = true, beta = true, cast = "shockwave",
       desc = "Hold LT to charge (3 stages), let go: a ground wave rolls out and launches everyone skyward. (To become the psi mutants' own shockwave.)" },
-    { name = "Psi-Barrage",        cost = "2",         ready = false, beta = true, cast = "psibarrage",
+    { name = "Psi-Barrage",        cost = "2",         ready = true, beta = true, cast = "psibarrage",
       desc = "LT: the psi mutants' own psychic grenades, thrown at up to 3 enemies in front of you. (Meet a psi mutant once first.)" },
     { name = "Super Baller Disc",  cost = "?",         ready = false,
       desc = "Coming soon: a psychic ball under a spinning disc." },
@@ -2267,6 +2268,30 @@ CAST.shockwave = function(i, p, pc, pawn, pressed, held, dt)
     end)
     local pf = psiClass("pulsefield")
     if pf then pcall(fireProjectile, pf, { X = c.X, Y = c.Y, Z = c.Z + 60 }, { X = c.X, Y = c.Y, Z = c.Z - 200 }, pawn) end
+    -- what comes out of the psi mutants' grenade when it blows (not the grenade or its red
+    -- warning circle): a psi grenade made right on the ground and set off at once
+    pcall(function()
+        local gcls = state.projClassFor and state.projClassFor("BP_ProjectilePsiGrenade_C", {}) or psiClass("psigrenade")
+        if not valid(gcls) then return end
+        for k = 1, stage do
+            local at = { X = c.X, Y = c.Y, Z = c.Z + 20 }
+            local g = OK.getWorld():SpawnActor(gcls, at, { Pitch = -90, Yaw = 0, Roll = 0 })
+            if valid(g) then
+                pcall(function() g:SetOwner(pawn) end)
+                pcall(function() g.Instigator = pawn end)
+                -- only the grenade's own body is hidden (its blast effects stay)
+                pcall(function()
+                    for _, m in ipairs(OK.arrayToList(g:K2_GetComponentsByClass(StaticFindObject("/Script/Engine.MeshComponent")))) do
+                        pcall(function() m:SetVisibility(false, false) end)
+                    end
+                end)
+                local okE = pcall(function() g:OnProjectileExplosion(at, maxR) end)
+                if not okE then pcall(function() g:FireProjectile(40, nil, { X = 0, Y = 0, Z = -1 }) end) end
+                after(3.0, function() if valid(g) then pcall(function() g:K2_DestroyActor() end) end end)
+                if not state.shockBlastLogged then state.shockBlastLogged = true; wlog("Shockwave: psi grenade blast %s", okE and "set off" or "dropped") end
+            end
+        end
+    end)
     wlog("P%d Mutant Shockwave, stage %d%s", i, stage, pf and " (with the psi mutants' pulse field)" or "")
 end
 
@@ -3693,6 +3718,9 @@ OK.addTickJob("mindWheel", 0.0, function()
             end
         end
         local pkBusy = state.pkHolding and state.pkHolding[i]
+        -- the game's own weapon wheel never stays up on foot (it could flash open on LB)
+        if onFoot(pawn) and (lb or (p.lbUpAt and os.clock() - p.lbUpAt < 1.0)) then pcall(closeGameWheel, pawn) end
+        if not lb and p.lbDownAt then p.lbUpAt = os.clock() end
         local tapT = CFG.LB_TAP_TIME or 0.25
         if lb then
             p.lbDownAt = p.lbDownAt or os.clock()

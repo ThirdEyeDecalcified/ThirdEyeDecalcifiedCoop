@@ -5360,7 +5360,7 @@ do
                 end
             end
         end
-        if not CFG.P2_ZAP_CHAIN then return end
+        if not CFG.P2_ZAP_CHAIN or state.zapShotActive then return end
         local w = weaponOf(state.p2)
         if not (isZap(w) and shooting(w)) then
             zap.main = nil; zap.links = nil; clearArcs()
@@ -8020,9 +8020,13 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
     -- building adds damage by what it was (a Quantum Deconstructor blast far more than a
     -- Disintegrator bolt); a building collapses once it has taken enough for its size.
     do
-        local POWER = { { "QuantumDecon", 120 }, { "SonicBoom", 70 }, { "DeathRay", 60 }, { "Ion", 40 }, { "Tank", 50 },
-                        { "SAM", 40 }, { "Rocket", 40 }, { "Missile", 40 }, { "Grenade", 25 }, { "Mortar", 35 },
-                        { "Disintegrator", 8 }, { "Probe", 3 } }
+        -- by the projectile itself (whatever gun fired it: a Disintegrator firing Quantum
+        -- Deconstructor shots wrecks like the saucer)
+        local POWER = { { "QuantumDecon", 120 }, { "SonicBoom", 70 }, { "DeathRay", 60 }, { "BossAOE", 60 }, { "Tank", 50 },
+                        { "Ion", 40 }, { "SAM", 40 }, { "Rocket", 40 }, { "Missile", 40 }, { "PowerSuit", 30 },
+                        { "TeslaCoil", 30 }, { "Grenade", 25 }, { "Mortar", 35 }, { "MindLinkPulse", 15 },
+                        { "MajesticAlienTech", 12 }, { "Disintegrat", 8 }, { "GunTurret", 6 }, { "Shotgun", 5 },
+                        { "Rifle", 4 }, { "Pistol", 3 }, { "Probe", 3 }, { "Transmogrif", 10 } }
         local function powerOf(n)
             for _, e in ipairs(POWER) do if n:find(e[1]) then return e[2] end end
             return 10
@@ -8898,8 +8902,8 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
         { "After a game over with two players, give the game a few seconds before dropping Player 2 out." },
         { "Options marked TEST haven't been fully tried yet." },
         { "Skins: Player 1 changes skin at the Mothership as normal. The mod's skin keys are for Player 2 only, because changing Player 1's skin through the mod caused save-game problems in testing." },
-        { "Psi-Barrage, Mutant Shockwave, Free Fear and Body Snatch are on the wheel but switched off while they're being fixed." },
-        { "Free Love works in single player only for now (it is switched off while Player 2 is in)." },
+        { "All mind powers are on. Psi-Barrage, Mutant Shockwave, Free Fear and Body Snatch are newly back and still being tuned." },
+        { "Free Love works in co-op too; its dance party and hearts only show in single player." },
         { "After a game over the game goes back to one player at the saucer; Player 2 presses Start to rejoin." },
         { "Bug reports: send overkill_coop_log.txt and overkill_pk_log.txt (next to the game exe) and ue4ss/UE4SS.log." },
     }
@@ -10117,6 +10121,8 @@ end)()
         local f = io.open(KNOWN_FILE, "r")
         if not f then return end
         for line in f:lines() do
+            local gk = line:match("^gun%s+(%S+)")
+            if gk then state.knownGuns = state.knownGuns or {}; state.knownGuns[gk] = true end
             local kind, path = line:match("^(%a+)%s+(/%S+)")
             if kind and path then
                 local n = path:match("%.([%w_%-]+)$") or path
@@ -10133,6 +10139,10 @@ end)()
         for n in pairs(knownPath) do names[#names + 1] = n end
         table.sort(names)
         for _, n in ipairs(names) do f:write(string.format("%s %s\n", knownKind[n] or "proj", knownPath[n])) end
+        local guns = {}
+        for g in pairs(state.knownGuns or {}) do guns[#guns + 1] = g end
+        table.sort(guns)
+        for _, g in ipairs(guns) do f:write("gun " .. g .. "\n") end
         f:close()
     end
     readKnown()
@@ -10303,8 +10313,19 @@ end)()
                   log("Projectiles: %s now shoots %s", kind, v)
               end })
     end
-    -- the players' guns (fixed rows), plus one row per NPC gun kind found on this map
+    -- the players' guns (fixed rows), plus one row per NPC gun kind ever found (saved list)
     projRow("DisintegratorRayBP_C", "Disintegrator Ray shoots")
+    do
+        local guns = {}
+        for g in pairs(state.knownGuns or {}) do guns[#guns + 1] = g end
+        table.sort(guns)
+        for _, g in ipairs(guns) do
+            if not isPlayerGun(g) and not npcKinds[g] then
+                npcKinds[g] = true
+                projRow(g, "NPC gun " .. g:gsub("^BP_Weapon_", ""):gsub("_C$", "") .. " shoots")
+            end
+        end
+    end
     add({ key = "act_projscan", page = PAGE_PROJ, label = "Look again for projectiles and NPC guns (after loading a new area)",
           options = { "Scan now" }, show = function() return true end, get = function() return "Scan now" end,
           set = function(v)
@@ -10316,6 +10337,8 @@ end)()
                   local k = kindOf(w)
                   if k and not isPlayerGun(k) and not npcKinds[k] then
                       npcKinds[k] = true
+                      state.knownGuns = state.knownGuns or {}; if not state.knownGuns[k] then state.knownGuns[k] = true; writeKnown() end
+                state.knownGuns = state.knownGuns or {}; if not state.knownGuns[k] then state.knownGuns[k] = true; writeKnown() end
                       found = found + 1
                       projRow(k, "NPC gun " .. k:gsub("^BP_Weapon_", ""):gsub("_C$", "") .. " shoots")
                   end
@@ -10333,6 +10356,7 @@ end)()
             local k = kindOf(w)
             if k and not isPlayerGun(k) and not npcKinds[k] then
                 npcKinds[k] = true
+                state.knownGuns = state.knownGuns or {}; if not state.knownGuns[k] then state.knownGuns[k] = true; writeKnown() end
                 projRow(k, "NPC gun " .. k:gsub("^BP_Weapon_", ""):gsub("_C$", "") .. " shoots")
             end
         end
@@ -10408,18 +10432,18 @@ end)()
         log("Zap beam: %s now uses %s", shortName(w), beamChoice)
     end
     onWorldChange(function() beamOrig, beamMade = {}, {} end)
-    add({ key = "zapbeam", page = PAGE_PROJ, label = "TEST  Zap-O-Matic beam (both players)", options = beamList,
+    if false then add({ key = "zapbeam", page = PAGE_PROJ, label = "TEST  Zap-O-Matic beam (both players)", options = beamList,
           show = function() if #beamList == 1 then refreshBeams() end return true end,
           get = function() return beamChoice end,
-          set = function(v) beamChoice = v; for _, w in ipairs(zaps()) do pcall(applyBeam, w) end end })
+          set = function(v) beamChoice = v; for _, w in ipairs(zaps()) do pcall(applyBeam, w) end end }) end
     addTickJob("zapBeamKeep", 2.0, function()
         if beamChoice == "Game default" then return end
         for _, w in ipairs(zaps()) do pcall(applyBeam, w) end
     end)
 
     -- ---------- Zap-O-Matic fires projectiles instead of its beam (TEST) ----------
-    local zapShot, zapNext, zapBeamSaved = "Game default", {}, {}
-    add({ key = "zapshot", page = PAGE_PROJ, label = "TEST  Zap-O-Matic fires (instead of its beam, both players)", options = projList,
+    local zapShot, zapNext, zapBeamSaved, zapFxHidden = "Game default", {}, {}, {}
+    add({ key = "zapshot", page = PAGE_PROJ, label = "TEST  Zap-O-Matic fires", options = projList,
           show = function() return true end, get = function() return zapShot end,
           set = function(v) zapShot = v; log("Zap-O-Matic: now fires %s", v) end })
     addTickJob("zapShots", 0.0, function()
@@ -10441,11 +10465,23 @@ end)()
                         if valid(b) then
                             local bk = keyOf(b)
                             zapBeamSaved[bk] = zapBeamSaved[bk] or { b = b, dmg = b.m_fDamagePerTick }
+                            zapBeamSaved[bk].len = zapBeamSaved[bk].len or b.m_fBeamLength
+                            zapBeamSaved[bk].jumps = zapBeamSaved[bk].jumps or { b.m_iIRIDIUM_NumberPossibleJumps, b.m_iIridiumSpreaderNumberOfJumps }
                             b.m_fDamagePerTick = 0
+                            b.m_fBeamLength = 1
+                            pcall(function() b.m_iIRIDIUM_NumberPossibleJumps = 0 end)
+                            pcall(function() b.m_iIridiumSpreaderNumberOfJumps = 0 end)
                             b:SetActorHiddenInGame(true)
                             pcall(function() if valid(b.BeamEffect) then b.BeamEffect:SetActorHiddenInGame(true); zapBeamSaved[bk].fx = b.BeamEffect end end)
                         end
                     end)
+                    -- the beam's arcs are separate effect actors: hidden while firing projectiles
+                    if okS and firing then
+                        for _, fx in ipairs(FindAllOf("BP_Zapomatic_BeamEffectActor_C") or {}) do
+                            if valid(fx) then pcall(function() fx:SetActorHiddenInGame(true) end); zapFxHidden[keyOf(fx)] = fx end
+                        end
+                    end
+                    state.zapShotActive = true
                     if okS and firing and now >= (zapNext[i] or 0) then
                         zapNext[i] = now + (CFG.ZAP_SHOT_EVERY or 0.2)
                         pcall(function()
@@ -10476,6 +10512,14 @@ end)()
                             -- the game's own launch (as its guns do): flight, damage and effects from the projectile
                             pcall(function() pr:SetWeapon(w) end)
                             local okF = pcall(function() pr:FireProjectile(8000, homing, dir) end)
+                            -- (the game's launch aims from the gun's own target data: point it at our aim)
+                            pcall(function() pr:K2_SetActorRotation(rot, false) end)
+                            pcall(function()
+                                local pm = pr.m_pMovementComponent
+                                local spd = CFG.ZAP_SHOT_SPEED or 5000
+                                pcall(function() local m = pm.MaxSpeed; if type(m) == "number" and m > 100 then spd = math.min(m, spd) end end)
+                                pm.Velocity = { X = dir.X * spd, Y = dir.Y * spd, Z = dir.Z * spd }
+                            end)
                             if not okF then
                                 pcall(function()
                                     local pm = pr.m_pMovementComponent
@@ -10494,9 +10538,16 @@ end)()
     -- back to the beam: put it back as it was
     addTickJob("zapShotsRestore", 0.5, function()
         if zapShot ~= "Game default" then return end
+        state.zapShotActive = false
+        for k, fx in pairs(zapFxHidden) do if valid(fx) then pcall(function() fx:SetActorHiddenInGame(false) end) end zapFxHidden[k] = nil end
         for k, e in pairs(zapBeamSaved) do
             if valid(e.b) then
                 pcall(function() e.b.m_fDamagePerTick = e.dmg end)
+                if e.len then pcall(function() e.b.m_fBeamLength = e.len end) end
+                if e.jumps then
+                    pcall(function() e.b.m_iIRIDIUM_NumberPossibleJumps = e.jumps[1] end)
+                    pcall(function() e.b.m_iIridiumSpreaderNumberOfJumps = e.jumps[2] end)
+                end
                 pcall(function() e.b:SetActorHiddenInGame(false) end)
                 if e.fx and valid(e.fx) then pcall(function() e.fx:SetActorHiddenInGame(false) end) end
             end
