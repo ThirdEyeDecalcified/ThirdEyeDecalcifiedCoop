@@ -8031,7 +8031,7 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
         onWorldChange(function() live, hits = {}, {} end)
         state.trainerExtras = state.trainerExtras or {}
         state.trainerExtras[#state.trainerExtras + 1] = { key = "x_wreck", page = 4,
-            label = "TEST  Weapons wreck buildings on foot (by how strong the shot is)",
+            label = "Weapons wreck buildings on foot (by how strong the shot is)",
             options = { "Off", "Players' shots", "Everyone's shots" },
             get = function() return state.trWreck or "Off" end,
             set = function(v) state.trWreck = v; log("Trainer: buildings wreckable on foot: %s", v) end }
@@ -8237,15 +8237,28 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
     addTickJob("trainerRiot", 2.0, function() if state.trRiot == "On (experimental)" then riotTick(true) end end)
 
     -- God mode: both players' shield and health kept full.
-    addTickJob("trainerGod", 0.2, function()
-        if not state.trGod or state.trGod == "Off" then return end
+    -- (also the engine's own "can't be damaged" switch: refilling alone missed one-hit deaths,
+    -- e.g. a fall right after a size change)
+    local godOn = {}
+    addTickJob("trainerGod", 0.1, function()
+        if not state.trGod or state.trGod == "Off" then
+            for k, pw in pairs(godOn) do if valid(pw) then pcall(function() pw.bCanBeDamaged = true end) end godOn[k] = nil end
+            return
+        end
+        local now = {}
         for _, pc in ipairs(whoList(state.trGod)) do
             local pw = valid(pc) and getPawn(pc) or nil
             if valid(pw) then
+                now[keyOf(pw)] = true
+                if not godOn[keyOf(pw)] then godOn[keyOf(pw)] = pw end
+                pcall(function() pw.bCanBeDamaged = false end)
                 local sh, hp = stat(pw, "m_pShieldStat"), stat(pw, "m_pHealthStat")
                 if sh and (ratioOf(sh) or 1) < 0.999 then fillStat(sh, 1.0) end
                 if hp and (ratioOf(hp) or 1) < 0.999 then fillStat(hp, 1.0) end
             end
+        end
+        for k, pw in pairs(godOn) do
+            if not now[k] then if valid(pw) then pcall(function() pw.bCanBeDamaged = true end) end godOn[k] = nil end
         end
     end)
     local function applyGod(label) state.trGod = label; log("Trainer: god mode %s", label) end
@@ -10405,7 +10418,7 @@ end)()
     end)
 
     -- ---------- Zap-O-Matic fires projectiles instead of its beam (TEST) ----------
-    local zapShot, zapNext = "Game default", {}
+    local zapShot, zapNext, zapBeamSaved = "Game default", {}, {}
     add({ key = "zapshot", page = PAGE_PROJ, label = "TEST  Zap-O-Matic fires (instead of its beam, both players)", options = projList,
           show = function() return true end, get = function() return zapShot end,
           set = function(v) zapShot = v; log("Zap-O-Matic: now fires %s", v) end })
@@ -10422,34 +10435,72 @@ end)()
                 if not (okW and valid(w)) then pcall(function() w = arrayToList(eq:GetCurrentWeapons())[1] end) end
                 if valid(w) and nameOf(w):find("Zap%-O%-Matic") then
                     local okS, firing = pcall(function() return w:IsShooting() end)
-                    if okS and firing then
-                        -- no beam while it fires the projectile
-                        pcall(function() w.m_pBeam:StopBeam() end)
-                        if now >= (zapNext[i] or 0) then
-                            zapNext[i] = now + (CFG.ZAP_SHOT_EVERY or 0.2)
-                            pcall(function()
-                                local from = w:K2_GetActorLocation()
-                                local to = nil
-                                -- at what the zap is locked on to, else straight down the aim
-                                pcall(function()
-                                    for _, t in ipairs(arrayToList(w.m_apCurrentLockedTargets)) do
-                                        if valid(t) then to = state.targetPoint(t) break end
-                                    end
-                                end)
-                                if not to then
-                                    local cm = pc.PlayerCameraManager
-                                    local c, r = cm:GetCameraLocation(), cm:GetCameraRotation()
-                                    local raise = (i == 2 and state.p2CrosshairPitch) and (state.p2CrosshairPitch() or 0) or 0
-                                    local yaw, pitch = math.rad(r.Yaw), math.rad(r.Pitch + raise)
-                                    to = { X = c.X + math.cos(pitch) * math.cos(yaw) * 6000, Y = c.Y + math.cos(pitch) * math.sin(yaw) * 6000,
-                                           Z = c.Z + math.sin(pitch) * 6000 }
-                                end
-                                state.fireProjectile(cls, { X = from.X, Y = from.Y, Z = from.Z + 10 }, to, pawn, CFG.ZAP_SHOT_SPEED or 5000, 0)
-                            end)
+                    -- the beam stays, but unseen and harmless, while the gun fires the projectile
+                    pcall(function()
+                        local b = w.m_pBeam
+                        if valid(b) then
+                            local bk = keyOf(b)
+                            zapBeamSaved[bk] = zapBeamSaved[bk] or { b = b, dmg = b.m_fDamagePerTick }
+                            b.m_fDamagePerTick = 0
+                            b:SetActorHiddenInGame(true)
+                            pcall(function() if valid(b.BeamEffect) then b.BeamEffect:SetActorHiddenInGame(true); zapBeamSaved[bk].fx = b.BeamEffect end end)
                         end
+                    end)
+                    if okS and firing and now >= (zapNext[i] or 0) then
+                        zapNext[i] = now + (CFG.ZAP_SHOT_EVERY or 0.2)
+                        pcall(function()
+                            local from = w:K2_GetActorLocation()
+                            local to, homing = nil, nil
+                            pcall(function()
+                                for _, t in ipairs(arrayToList(w.m_apCurrentLockedTargets)) do
+                                    if valid(t) then to = state.targetPoint(t); homing = t:K2_GetRootComponent() break end
+                                end
+                            end)
+                            if not to then
+                                local cm = pc.PlayerCameraManager
+                                local c, r = cm:GetCameraLocation(), cm:GetCameraRotation()
+                                local raise = (i == 2 and state.p2CrosshairPitch) and (state.p2CrosshairPitch() or 0) or 0
+                                local yaw, pitch = math.rad(r.Yaw), math.rad(r.Pitch + raise)
+                                to = { X = c.X + math.cos(pitch) * math.cos(yaw) * 6000, Y = c.Y + math.cos(pitch) * math.sin(yaw) * 6000,
+                                       Z = c.Z + math.sin(pitch) * 6000 }
+                            end
+                            local dx, dy, dz = to.X - from.X, to.Y - from.Y, to.Z - from.Z
+                            local d = math.max(1, math.sqrt(dx * dx + dy * dy + dz * dz))
+                            local dir = { X = dx / d, Y = dy / d, Z = dz / d }
+                            local rot = { Pitch = math.deg(math.atan(dz, math.sqrt(dx * dx + dy * dy))), Yaw = math.deg(math.atan(dy, dx)), Roll = 0 }
+                            local start = { X = from.X + dir.X * 60, Y = from.Y + dir.Y * 60, Z = from.Z + dir.Z * 60 + 10 }
+                            local okP, pr = pcall(function() return getWorld():SpawnActor(cls, start, rot) end)
+                            if not (okP and valid(pr)) then return end
+                            pcall(function() pr:SetOwner(pawn) end)
+                            pcall(function() pr.Instigator = pawn end)
+                            -- the game's own launch (as its guns do): flight, damage and effects from the projectile
+                            pcall(function() pr:SetWeapon(w) end)
+                            local okF = pcall(function() pr:FireProjectile(8000, homing, dir) end)
+                            if not okF then
+                                pcall(function()
+                                    local pm = pr.m_pMovementComponent
+                                    pm:SetUpdatedComponent(pr:K2_GetRootComponent())
+                                    pm.Velocity = { X = dir.X * 5000, Y = dir.Y * 5000, Z = dir.Z * 5000 }
+                                    pm:Activate(true)
+                                end)
+                            end
+                            if not state.zapShotLogged then state.zapShotLogged = true; log("Zap-O-Matic shot: %s, game launch %s", shortName(pr), okF and "ok" or "failed (pushed instead)") end
+                        end)
                     end
                 end
             end
+        end
+    end)
+    -- back to the beam: put it back as it was
+    addTickJob("zapShotsRestore", 0.5, function()
+        if zapShot ~= "Game default" then return end
+        for k, e in pairs(zapBeamSaved) do
+            if valid(e.b) then
+                pcall(function() e.b.m_fDamagePerTick = e.dmg end)
+                pcall(function() e.b:SetActorHiddenInGame(false) end)
+                if e.fx and valid(e.fx) then pcall(function() e.fx:SetActorHiddenInGame(false) end) end
+            end
+            zapBeamSaved[k] = nil
         end
     end)
 

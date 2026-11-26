@@ -3697,6 +3697,13 @@ OK.addTickJob("mindWheel", 0.0, function()
         if lb then
             p.lbDownAt = p.lbDownAt or os.clock()
             if not p.lbPressAt then p.lbPressAt, p.lbPicked = os.clock(), false end
+            -- Crypto's own buttons pause from the moment LB goes down (the game's own wheel
+            -- flashed open during the short wait for a tap)
+            if onFoot(pawn) and not state.trainerOpen and not pkBusy and not p.inputOff then
+                pcall(function() pawn:DisableInput(pc) end)
+                p.inputOff = { pawn = pawn, pc = pc }
+            end
+            if onFoot(pawn) then pcall(closeGameWheel, pawn) end
         else
             if p.lbDownAt and not p.overlay and not p.inputOff and os.clock() - p.lbDownAt < tapT
                and onFoot(pawn) and not state.trainerOpen and not pkBusy then
