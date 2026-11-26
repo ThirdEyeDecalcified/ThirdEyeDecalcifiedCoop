@@ -141,14 +141,15 @@ local CFG = {
     P2_LOCK_REAL = false,             -- (test: off) the mod no longer writes Player 2's lock into the game
     P2_GUN_FOLLOW_GAME = true,
     P2_MOD_GUN_LOCK = false,          -- (off) the mod's own gun lock for Player 2 when the game has none (it made the ghost targets)
-    SPLIT_VEHICLE_LOD_MULT = 2.5,     -- two players: cars keep their drivers and full detail this many times further from Player 1
+    SPLIT_VEHICLE_LOD_MULT = 1,       -- (off: tested, made no difference to empty cars)
+    ALERT_CARD_SET = false,           -- (off: suspected crash) the "!!" card hook may change the level the game passes in     -- two players: cars keep their drivers and full detail this many times further from Player 1
     SPLIT_LOD_PROFILE = true,         -- two players: keep detail further out (each half-screen view is smaller, so the game drops detail sooner)
     SPLIT_LOD_COMMANDS = { "r.StaticMeshLODDistanceScale 0.6", "r.SkeletalMeshLODBias -1", "r.ViewDistanceScale 1.6", "foliage.LODDistanceScale 1.6" },
     SPLIT_LOD_RESET = { "r.StaticMeshLODDistanceScale 1", "r.SkeletalMeshLODBias 0", "r.ViewDistanceScale 1", "foliage.LODDistanceScale 1" },        -- Player 2's cyan bracket uses the game's own lock when it has one
     P2_PK_AIM_WIDEN = 2.0,
     P2_PK_GAP_HOLD = 0.6,             -- Player 2's arcs bridge the game's short PK-aim drop-outs (seconds)            -- Player 2's PK reach to the sides (the game's auto-target area x this)
     P2_TARGET_HEALTH = true,          -- Player 2 sees the health bar of what its gun is locked on to
-    P2_ZAP_CHAIN = false,             -- (test: off) the mod's own zap chain for Player 2; does the game chain by itself now?
+    P2_ZAP_CHAIN = true,              -- the mod's zap chain for Player 2 (tested: the game alone doesn't chain for Player 2)
     P2_ZAP_BRACKET = true,
     P2_ZAP_ARCS = true,               -- draw the arcs of Player 2's zap chain with the game's beam effect            -- Player 2's cyan Zap-O-Matic bracket placed from Player 2's own view              -- Player 2's Zap-O-Matic arcs to the people next to its target
     P2_ZAP_CHAIN_MAX = 3,             -- targets in Player 2's chain (main one included)
@@ -5996,7 +5997,7 @@ do
                     -- police / military are after you at all (both players share one wanted level)
                     local hold = state.cardHigh and (now - (state.cardSeenAt or -100) < CFG.ALERT_SEEN_HOLD
                                                      or (state.alertLevelNow or 0) > 0)
-                    if hold and v < state.cardHigh then
+                    if hold and v < state.cardHigh and CFG.ALERT_CARD_SET then
                         out = state.cardHigh
                         local okS = pcall(function() eState:set(out) end)
                         if not okS and not state.cardSetFail then state.cardSetFail = true; log("Seen card: couldn't change the level") end
