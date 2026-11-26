@@ -1374,6 +1374,11 @@ end
 RegisterKeyBind(Key.F9, function() DumpRequested = true end)
 
 
+-- the trainer's "Mod features" row turns the PK overhaul off / on
+if OverkillCoop and OverkillCoop.state then
+    OverkillCoop.state.pkSetEnabled = function(on) ModEnabled = on and true or false; log("Enabled = " .. tostring(ModEnabled)) end
+    OverkillCoop.state.pkIsEnabled = function() return ModEnabled end
+end
 -- F6 toggle (F10 is the console key in ConsoleEnablerMod)
 RegisterKeyBind(Key.F6, function()
     ModEnabled = not ModEnabled

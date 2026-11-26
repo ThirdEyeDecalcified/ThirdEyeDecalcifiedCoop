@@ -879,6 +879,55 @@ local function closeGameWheel(pawn)
     return false
 end
 
+-- Closing the game's wheel after it opened still showed it for a frame or two, every time.
+-- Now it's made see-through before it can show: its widget is kept fully transparent (and
+-- pushed off screen) while you're on foot and the mod's wheel is on, and the moment the
+-- game opens it (its HUD event, on the game thread) it's hidden again before it draws.
+-- The tick still closes it straight after so its slow motion and buttons don't stay.
+local function setGameMenuHidden(menu, hide)
+    if not valid(menu) then return end
+    local a = hide and 0 or 1
+    pcall(function() menu:SetColorAndOpacity({ R = 1, G = 1, B = 1, A = a }) end)
+    pcall(function() menu:SetRenderOpacity(a) end)
+    pcall(function() menu:SetRenderTranslation({ X = hide and -30000 or 0, Y = 0 }) end)
+end
+local function hideGameMenuOf(pawn)
+    local sel = subObj(pawn, "m_pWeaponAndAbilitySelection")
+    local menu = sel and subObj(sel, "m_pMenu")
+    local want = CFG.MIND_WHEEL and CFG.HIDE_GAME_WHEEL ~= false and onFoot(pawn) or false
+    if menu then
+        local k = OK.keyOf(menu)
+        state.gameMenuHidden = state.gameMenuHidden or {}
+        -- set again each time it's in the viewport (the game may reset it when it opens)
+        local okV, inVp = pcall(function() return menu:IsInViewport() end)
+        if state.gameMenuHidden[k] ~= want or (want and okV and inVp) then
+            setGameMenuHidden(menu, want)
+            state.gameMenuHidden[k] = want
+        end
+    end
+    return menu
+end
+state.hideGameMenuOf = hideGameMenuOf
+OK.onWorldChange(function() state.gameMenuHidden = {} end)
+if not state.gameMenuHook then
+    state.gameMenuHook = true
+    local okH = pcall(function()
+        RegisterHook("/Game/Blueprints/UI/HUD/BPW_HUD_Base.BPW_HUD_Base_C:Event_OnSelectionMenuStateChanged", function(Context)
+            if not CFG.MIND_WHEEL then return end
+            pcall(function()
+                local hud = Context:get()
+                local pawn = hud:GetOwningPlayerPawn()
+                if valid(pawn) and onFoot(pawn) then
+                    local sel = subObj(pawn, "m_pWeaponAndAbilitySelection")
+                    local menu = sel and subObj(sel, "m_pMenu")
+                    if menu then setGameMenuHidden(menu, true) end
+                end
+            end)
+        end)
+    end)
+    wlog("Game wheel: hidden the moment it opens (%s)", okH and "hooked" or "hook not available, closing it instead")
+end
+
 -- while the LB menu is open the player can't be seen (the game's own "invisible" state)
 local function wheelProtect(pawn, on)
     local inv = OK.stat(pawn, "m_pIsInvisibleStat")
@@ -4007,7 +4056,7 @@ local function powersTick(i, p, pc, pawn)
     local lt = kbDown(pc, "Gamepad_LeftTrigger")
     local pressed = lt and not p.ltWas
     p.ltWas = lt
-    if not (pw and pw.cast and CAST[pw.cast]) then return end
+    if not (pw and pw.cast and CAST[pw.cast]) or CFG.MIND_POWERS == false then return end
     local ok, err = pcall(CAST[pw.cast], i, p, pc, pawn, pressed, lt, dt)
     if not ok and not p.castErr then p.castErr = true; wlog("P%d %s failed: %s", i, pw.name, tostring(err)) end
 end
@@ -4111,12 +4160,19 @@ local function quickSwap(i, pawn)
 end
 
 OK.addTickJob("mindWheel", 0.0, function()
-    if not CFG.MIND_WHEEL then return end
+    if not CFG.MIND_WHEEL then
+        -- the mod's wheel switched off: the game's own wheel shows again
+        local any = false
+        for _, v in pairs(state.gameMenuHidden or {}) do any = any or v end
+        if any then for _, pc in ipairs(controllers()) do local pw = getPawn(pc); if valid(pw) then pcall(hideGameMenuOf, pw) end end end
+        return
+    end
     local anyOpen = false
     for i, pc in ipairs(controllers()) do
         local p = P[i]
         local pawn = getPawn(pc)
         local lb = valid(pc) and kbDown(pc, "Gamepad_LeftShoulder")
+        if valid(pawn) then pcall(hideGameMenuOf, pawn) end
         -- the game's wheel button stays taken away on foot (per body: a new body gets it again)
         if onFoot(pawn) and OK.keyOf(pawn) == p.panelPawn and os.clock() >= (p.panelWait or math.huge) then
             local pk = OK.keyOf(pawn)

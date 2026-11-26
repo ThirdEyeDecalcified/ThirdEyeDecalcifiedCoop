@@ -8891,6 +8891,8 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
         { "EARLY ACCESS", true },
         { "Everything here is a work in progress and may change between versions." },
         { "Made for two players. Players 3 and 4 are an early test and not ready yet: four players will come in time." },
+        { "MOD FEATURES", true },
+        { "Every part of the mod that works outside the menus can be switched off below, for a near-vanilla game. Rows marked CO-OP are needed for split screen to work properly. Save a row with X to keep it." },
     }
     local ISSUES = {
         { "KNOWN ISSUES  (early access: all work in progress, subject to change)", true },

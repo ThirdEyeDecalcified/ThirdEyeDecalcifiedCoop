@@ -151,18 +151,32 @@ OK.addTickJob("x_fovKeep", 0.0, function() if fovWanted then applyFov() end end)
 ------------------------------------------------------------------------------------------
 -- TEST NPC size (giant / tiny people)
 ------------------------------------------------------------------------------------------
-local NPC_SIZES = { ["Normal"] = 1.0, ["Giant (x2)"] = 2.0, ["Huge (x3)"] = 3.0, ["Tiny (x0.5)"] = 0.5 }
+local NPC_SIZES = { ["Normal"] = 1.0, ["Giant (x2)"] = 2.0, ["Huge (x3)"] = 3.0, ["Colossal (x10)"] = 10.0,
+    ["Tiny (x0.5)"] = 0.5, ["Smallest (x0.1)"] = 0.1 }
 local npcScale, npcTouched = 1.0, {}
+-- growing lifts them by the extra capsule height first, so their feet don't end up in the
+-- ground (the Colossal player sank into it the same way)
+local function liftFor(a, from, to)
+    if to <= from then return end
+    local hh = 90
+    pcall(function() hh = a.CapsuleComponent:GetUnscaledCapsuleHalfHeight() end)
+    pcall(function()
+        local l = a:K2_GetActorLocation()
+        a:K2_SetActorLocation({ X = l.X, Y = l.Y, Z = l.Z + hh * (to - from) + 5 }, false, {}, true)
+    end)
+end
 local function applyNpcSize()
-    for _, n in ipairs(npcs(8000)) do
+    for _, n in ipairs(npcs(npcScale >= 5 and 15000 or 8000)) do
         local k = OK.keyOf(n)
-        if npcScale ~= 1.0 or npcTouched[k] then
+        local was = npcTouched[k] or 1.0
+        if was ~= npcScale then
+            liftFor(n, was, npcScale)
             pcall(function() n:SetActorScale3D({ X = npcScale, Y = npcScale, Z = npcScale }) end)
-            npcTouched[k] = npcScale ~= 1.0 or nil
+            npcTouched[k] = npcScale ~= 1.0 and npcScale or nil
         end
     end
 end
-add({ key = "x_npcsize", page = 4, label = "People's size (NPCs near you)", options = { "Normal", "Giant (x2)", "Huge (x3)", "Tiny (x0.5)" },
+add({ key = "x_npcsize", page = 4, label = "People's size (NPCs near you)", options = { "Normal", "Giant (x2)", "Huge (x3)", "Colossal (x10)", "Tiny (x0.5)", "Smallest (x0.1)" },
     get = function() return state.trNpcSize or "Normal" end,
     set = function(v) state.trNpcSize = v; npcScale = NPC_SIZES[v] or 1.0; applyNpcSize(); log("Trainer: NPC size %s", v) end,
     reset = function() if npcScale ~= 1.0 then npcScale = 1.0; applyNpcSize() end; state.trNpcSize = nil; npcTouched = {} end })
@@ -234,21 +248,41 @@ OK.onWorldChange(function() hudHidden = { false, false }; state.trHud = nil end)
 -- TEST Vehicle size
 ------------------------------------------------------------------------------------------
 local carScale, carTouched = 1.0, {}
-local CAR_SIZES = { ["Normal"] = 1.0, ["Giant (x2)"] = 2.0, ["Tiny (x0.5)"] = 0.5, ["Toy (x0.25)"] = 0.25 }
+local CAR_SIZES = { ["Normal"] = 1.0, ["Giant (x2)"] = 2.0, ["Colossal (x10)"] = 10.0, ["Tiny (x0.5)"] = 0.5,
+    ["Toy (x0.25)"] = 0.25, ["Smallest (x0.1)"] = 0.1 }
+-- the lowest point of a vehicle (so a grown one can be lifted out of the road)
+local function bottomOf(v)
+    local z = nil
+    pcall(function()
+        local o, e = {}, {}
+        v:GetActorBounds(true, o, e)
+        if o.Z and e.Z then z = o.Z - e.Z end
+    end)
+    return z
+end
 local function applyCarSize()
     pcall(function()
         for _, v in ipairs(FindAllOf("BFGBasicVehicle") or {}) do
             if valid(v) then
                 local k = OK.keyOf(v)
-                if carScale ~= 1.0 or carTouched[k] then
+                local was = carTouched[k] or 1.0
+                if was ~= carScale then
+                    local b0 = carScale > was and bottomOf(v)
                     pcall(function() v:SetActorScale3D({ X = carScale, Y = carScale, Z = carScale }) end)
-                    carTouched[k] = carScale ~= 1.0 or nil
+                    local b1 = b0 and bottomOf(v)
+                    if b0 and b1 and b1 < b0 then
+                        pcall(function()
+                            local l = v:K2_GetActorLocation()
+                            v:K2_SetActorLocation({ X = l.X, Y = l.Y, Z = l.Z + (b0 - b1) + 10 }, false, {}, true)
+                        end)
+                    end
+                    carTouched[k] = carScale ~= 1.0 and carScale or nil
                 end
             end
         end
     end)
 end
-add({ key = "x_carsize", page = 4, label = "Vehicle size", options = { "Normal", "Giant (x2)", "Tiny (x0.5)", "Toy (x0.25)" },
+add({ key = "x_carsize", page = 4, label = "Vehicle size", options = { "Normal", "Giant (x2)", "Colossal (x10)", "Tiny (x0.5)", "Toy (x0.25)", "Smallest (x0.1)" },
     get = function() return state.trCarSize or "Normal" end,
     set = function(v) state.trCarSize = v; carScale = CAR_SIZES[v] or 1.0; applyCarSize(); log("Trainer: vehicle size %s", v) end,
     reset = function() if carScale ~= 1.0 then carScale = 1.0; applyCarSize() end; state.trCarSize = nil; carTouched = {} end })
@@ -774,3 +808,38 @@ add({ key = "x_hat", page = 3, label = "TEST  Hat (every player)", options = { "
     set = function(v) takeHatsOff(); hatWanted = HATS[v] and v or nil; log("Trainer: hat %s", v) end,
     reset = function() takeHatsOff(); hatWanted = nil end })
 OK.addTickJob("x_hats", 1.0, hatTick)
+
+------------------------------------------------------------------------------------------
+-- Mod features (Welcome page): every part of the mod that works outside the menus can be
+-- switched off here, for a near-vanilla game. CO-OP marks the ones split screen needs.
+-- These stay as set across maps (save with X to keep them between sessions).
+------------------------------------------------------------------------------------------
+local function feature(key, label, flags, coop, note)
+    local function isOn()
+        for _, f in ipairs(flags) do if CFG[f] == false then return false end end
+        return true
+    end
+    add({ key = key, page = 1, label = label .. (coop and "   [CO-OP]" or "") .. (note and ("   (" .. note .. ")") or ""),
+        options = { "On", "Off" },
+        get = function() return isOn() and "On" or "Off" end,
+        set = function(v)
+            local on = v ~= "Off"
+            for _, f in ipairs(flags) do CFG[f] = on end
+            log("Mod features: %s %s%s", label, on and "on" or "off", (coop and not on and valid(state.p2)) and " (WARNING: split screen needs this)" or "")
+        end })
+end
+feature("f_wheel", "Mind & weapons wheel on LB (off: the game's own wheel)", { "MIND_WHEEL" }, true)
+feature("f_powers", "Mind powers on LT (the mod's new powers)", { "MIND_POWERS" })
+feature("f_panel", "Power panel and concentration meter", { "WHEEL_PANEL" })
+add({ key = "f_pk", page = 1, label = "PK overhaul (hold / push / pull, sizes, throws)", options = { "On", "Off" },
+    get = function() return (state.pkIsEnabled and not state.pkIsEnabled()) and "Off" or "On" end,
+    set = function(v) if state.pkSetEnabled then state.pkSetEnabled(v ~= "Off") end; log("Mod features: PK overhaul %s", v) end })
+feature("f_downed", "Downed and revive (a partner can pick you up)", { "DOWNED_SYSTEM" }, true)
+feature("f_pickups", "Player 2's pickups go to Player 1 (shared brains and ammo)", { "P2_PICKUPS" }, true)
+feature("f_tags", "Partner tags over heads", { "PARTNER_MARKERS" })
+feature("f_bars", "Each player's own shield bar by the split line", { "PLAYER_BARS" }, true)
+feature("f_vignette", "Red hurt screen only for the player who was hurt", { "OWN_DAMAGE_VIGNETTE" }, true)
+feature("f_lod", "Split-screen detail range (keeps detail further out)", { "SPLIT_LOD_PROFILE" }, true)
+feature("f_p2zap", "Player 2's Zap-O-Matic chain, bracket and arcs", { "P2_ZAP_CHAIN", "P2_ZAP_BRACKET", "P2_ZAP_ARCS" }, true)
+feature("f_p2health", "Player 2 sees the health bar of their target", { "P2_TARGET_HEALTH" }, true)
+feature("f_recorder", "Test recorder (Guide button writes the last 12 s to the log)", { "TEST_RECORDER" })
