@@ -8634,7 +8634,7 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
 
     local PAGES = { "Welcome", "Controls", "Players", "World", "Spawn & travel", "Active", "Known issues", "Projectiles", "Upgrades" }
     -- the order the tabs are shown and stepped through (page numbers stay as they are)
-    local TAB_ORDER = { 1, 6, 2, 3, 4, 5, 7 }
+    local TAB_ORDER = { 1, 6, 2, 3, 4, 5, 8, 9, 7 }
     local function tabStep(page, dir)
         local at = 1
         for k, pg in ipairs(TAB_ORDER) do if pg == page then at = k end end
@@ -8731,6 +8731,15 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
                     -- 1-2 players: the long list; 3-4 players (smaller screens): the short one
                     local party = state.extraPlayers and (valid(state.extraPlayers[3]) or valid(state.extraPlayers[4]))
                     local h = party and (CFG.TRAINER_LIST_HEIGHT_SPLIT or 430) or (CFG.TRAINER_LIST_HEIGHT or 640)
+                    -- fill the menu: as tall as the screen allows (minus the title, tabs and hint)
+                    pcall(function()
+                        local lib = StaticFindObject("/Script/UMG.Default__WidgetLayoutLibrary")
+                        local sz, sc = lib:GetViewportSize(world), lib:GetViewportScale(world)
+                        local vh = (sz.Y or 0) / ((type(sc) == "number" and sc > 0) and sc or 1)
+                        if party then vh = vh / 2 end
+                        local fit = vh - (CFG.TRAINER_CHROME or 300) - (page == 1 and 280 or 0)
+                        if fit > 250 then h = fit end
+                    end)
                     pcall(function() sb:SetMaxDesiredHeight(h) end)
                     pcall(function() sb:SetContent(sc) end)
                     pcall(function() box:AddChildToVerticalBox(sb) end)
@@ -8820,9 +8829,9 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
                     t = U("Border", tree, "OK_TabOn" .. pi)
                     pcall(function() t:SetBrushColor({ R = 1, G = 0.8, B = 0.15, A = 1 }) end)
                     pcall(function() t:SetPadding({ Left = 0, Top = 1, Right = 0, Bottom = 1 }) end)
-                    pcall(function() t:SetContent(text("OK_Tab" .. pi, "   " .. string.upper(pn) .. "   ", 14, { R = 0.05, G = 0.05, B = 0.02, A = 1 })) end)
+                    pcall(function() t:SetContent(text("OK_Tab" .. pi, "  " .. string.upper(pn) .. "  ", 14, { R = 0.05, G = 0.05, B = 0.02, A = 1 })) end)
                 else
-                    t = text("OK_Tab" .. pi, "   " .. string.upper(pn) .. "   ", 13, CYD)
+                    t = text("OK_Tab" .. pi, "  " .. string.upper(pn) .. "  ", 13, CYD)
                 end
                 pcall(function() local sl = tabs:AddChildToHorizontalBox(t); sl:SetVerticalAlignment(2) end)
             end
@@ -8880,6 +8889,8 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
                 local col = h[2] and YE or { R = 0.8, G = 0.95, B = 1, A = 1 }
                 local t = text("DAH2P_TrainerHelp" .. i, h[1], h[2] and 16 or 13, col)
                 pcall(function() t:SetJustification(0) end)
+                pcall(function() t:SetAutoWrapText(true) end)
+                pcall(function() t.WrapTextAt = CFG.TRAINER_TEXT_WRAP or 900 end)
                 local okS, slot = pcall(function() return box:AddChildToVerticalBox(t) end)
                 if okS and slot and h[2] then pcall(function() slot:SetPadding({ Left = 0, Top = 10, Right = 0, Bottom = 2 }) end) end
             end
