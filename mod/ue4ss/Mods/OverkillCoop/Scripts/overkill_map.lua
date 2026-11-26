@@ -212,10 +212,15 @@ local function close()
 end
 OK.onWorldChange(close)
 
+local openInner
 local function open()
     if M then return end
+    local ok, err = pcall(openInner)
+    if not ok then mlog("opening failed: %s", tostring(err)); M = nil end
+end
+openInner = function()
     local pc = OK.player1Controller()
-    if not valid(pc) then return end
+    if not valid(pc) then mlog("can't open: no Player 1") return end
     local key = mapKey()
     local file = pictureFor(key)
     local tex = texCache[file]
@@ -233,9 +238,9 @@ local function open()
     end
     if not (valid(wbl) and template) then mlog("no widget host found (open the map once in a level)") return end
     local okC, w = pcall(function() return wbl:Create(OK.getWorld(), template:GetClass(), pc) end)
-    if not (okC and valid(w)) then return end
+    if not (okC and valid(w)) then mlog("can't open: the widget wasn't made (%s)", tostring(w)) return end
     local tree = OK.subObj(w, "WidgetTree")
-    if not tree then return end
+    if not tree then mlog("can't open: no widget tree") return end
     -- screen size in UMG units; the picture fits it, keeping its shape
     local vw, vh = 1920, 1080
     pcall(function()
@@ -297,7 +302,8 @@ local function open()
     M.info = place(canvas, info, 0, 0)
     M.infoW = info
     pcall(function() tree.RootWidget = canvas end)
-    pcall(function() w:AddToViewport(160) end)
+    local okV, errV = pcall(function() w:AddToViewport(160) end)
+    if not okV then mlog("can't show it: %s", tostring(errV)) end
     local pw = OK.getPawn(pc)
     if valid(pw) then pcall(function() pw:DisableInput(pc) end) end
     for _, kn in ipairs({ "Gamepad_FaceButton_Bottom", "Gamepad_FaceButton_Right", "Gamepad_FaceButton_Top", "Gamepad_FaceButton_Left", "Gamepad_DPad_Left", "Gamepad_DPad_Right" }) do
@@ -307,6 +313,7 @@ local function open()
     mlog("%s: picture %s %s, %d pins%s", key, file, valid(tex) and "loaded" or "not found", #pins, lined and "" or " (not lined up yet: rough guess)")
 end
 state.mapOpen = false
+state.closeMap = function() close() end
 state.openMap = function() OK.later(0.15, "mapOpen", function() if state.trainerCloseMenu then pcall(state.trainerCloseMenu) end; open() end) end
 
 local function edge(pc, kn)
@@ -429,5 +436,29 @@ table.insert(state.trainerExtras, { key = "x_map", page = 4, label = "Map: aeria
     options = { "(closed)", "Open the map" },
     get = function() return "(closed)" end,
     -- only from the open trainer (a saved "open" must never pop the map up on its own)
-    set = function(v) if v == "Open the map" and state.trainerOpen then state.openMap() end end })
+    set = function(v)
+        mlog("trainer row: %s (trainer open: %s)", tostring(v), tostring(state.trainerOpen))
+        if v == "Open the map" and (state.trainerOpen or os.clock() - (state.mapWorldAt or 0) > 15) then state.openMap() end
+    end })
+OK.onWorldChange(function() state.mapWorldAt = os.clock() end)
+
+-- Hold Select on pad 1 for 7 seconds (nothing else pressed) to open the map; Select again closes
+local HOLD_KEYS = { "Gamepad_FaceButton_Bottom", "Gamepad_FaceButton_Right", "Gamepad_FaceButton_Left", "Gamepad_FaceButton_Top",
+    "Gamepad_LeftShoulder", "Gamepad_RightShoulder", "Gamepad_LeftTrigger", "Gamepad_RightTrigger",
+    "Gamepad_DPad_Up", "Gamepad_DPad_Down", "Gamepad_DPad_Left", "Gamepad_DPad_Right",
+    "Gamepad_LeftThumbstick", "Gamepad_RightThumbstick", "Gamepad_Special_Right" }
+local selAt, selFired = nil, false
+OK.addTickJob("mapSelectHold", 0.1, function()
+    local pc = OK.player1Controller()
+    if not valid(pc) or state.trainerOpen then selAt = nil return end
+    local sel = OK.kbDown(pc, "Gamepad_Special_Left")
+    if not sel then selAt, selFired = nil, false return end
+    for _, k in ipairs(HOLD_KEYS) do if OK.kbDown(pc, k) then selAt = nil; selFired = true return end end
+    if selFired then return end
+    selAt = selAt or os.clock()
+    if os.clock() - selAt >= (CFG.MAP_SELECT_HOLD or 7) then
+        selFired = true
+        if state.mapOpen then mlog("Select held: closing") ; state.closeMap() else mlog("Select held: opening"); open() end
+    end
+end)
 mlog("ready (Trainer > World > Map)")
