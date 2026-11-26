@@ -142,7 +142,7 @@ local CFG = {
     P2_GUN_FOLLOW_GAME = true,
     P2_MOD_GUN_LOCK = false,          -- (off) the mod's own gun lock for Player 2 when the game has none (it made the ghost targets)
     SPLIT_VEHICLE_LOD_MULT = 1,       -- (off: tested, made no difference to empty cars)
-    ALERT_CARD_SET = false,           -- (off: suspected crash) the "!!" card hook may change the level the game passes in     -- two players: cars keep their drivers and full detail this many times further from Player 1
+    ALERT_CARD_SET = true,            -- co-op: each player's "!!" card is told their own seen state (off: the game's flipping one)     -- two players: cars keep their drivers and full detail this many times further from Player 1
     SPLIT_LOD_PROFILE = true,         -- two players: keep detail further out (each half-screen view is smaller, so the game drops detail sooner)
     SPLIT_LOD_COMMANDS = { "r.StaticMeshLODDistanceScale 0.6", "r.SkeletalMeshLODBias -1", "r.ViewDistanceScale 1.6", "foliage.LODDistanceScale 1.6" },
     SPLIT_LOD_RESET = { "r.StaticMeshLODDistanceScale 1", "r.SkeletalMeshLODBias 0", "r.ViewDistanceScale 1", "foliage.LODDistanceScale 1" },        -- Player 2's cyan bracket uses the game's own lock when it has one
@@ -5980,54 +5980,87 @@ do
     end)
 end
 
--- Co-op "!!" fix: the wanted system's "seen" state flips on/off every second in co-op (it
--- checks the players in turn), which throws the bottom card away and brings it back. Once seen,
--- it's held on for a few seconds after the last time either player was seen.
+-- Co-op "!!" card, the way Destroy All Humans! 2 does it for its own co-op (from its dump:
+-- the alert manager keeps a seen state and a last-seen time PER PLAYER, and each player's
+-- card follows their own). This game only has one seen state, and in co-op it flips on and
+-- off as it checks the two players in turn, which threw the card away and brought it back.
+-- Now: each player's own seen state comes from the people hunting them (an NPC whose target
+-- is that player and who sees "the player"), with that player's last-seen time; each
+-- player's card is told their own state, held for a few seconds after they were last seen
+-- (and while the wanted level they were seen in is still up). The game's alert manager is
+-- no longer written to every frame (that made the flipping worse).
 do
-    local lastSeenAt = -100
-    addTickJob("alertSeenHold", 0.0, function()
+    local seen = { { st = 0, last = -100, hunted = false }, { st = 0, last = -100, hunted = false } }
+    state.coopSeen = seen
+    local npcAt, npcs = -10, {}
+    local function hunters()
+        if os.clock() - npcAt < 0.5 then return npcs end
+        npcAt = os.clock()
+        npcs = {}
+        pcall(function()
+            local out = {}
+            getStatics():GetAllActorsOfClass(getWorld(), StaticFindObject("/Script/BFGCore.BFGNPCCharacterGameplay"), out)
+            for _, a in ipairs(out) do
+                local v = a
+                if type(a) == "userdata" and not valid(a) then pcall(function() v = a:get() end) end
+                if valid(v) then npcs[#npcs + 1] = v end
+            end
+        end)
+        return npcs
+    end
+    -- the card's level for a player right now (held: seen recently, or still wanted since)
+    state.coopSeenFor = function(slot)
+        local e = seen[slot]
+        if not e then return nil end
+        local now = os.clock()
+        if now - e.last < (CFG.ALERT_SEEN_HOLD or 3) then return e.st end
+        if (state.alertLevelNow or 0) > 0 and e.last > (state.wantedSince or math.huge) then return e.st end
+        return 0
+    end
+    local logAt = 0
+    addTickJob("alertSeenHold", 0.1, function()
         if not (CFG.ALERT_SEEN_HOLD and valid(state.p2)) then return end
         local gs = FindFirstOf("GameStateBase")
         local okM, mgr = pcall(function() return gs:GetAlertSystemManager() end)
         if not (okM and valid(mgr)) then return end
-        local okS, seen = pcall(function() return mgr:GetSeenState() end)
-        if not okS then return end
         local now = os.clock()
-        -- the alert state (calm / searching / fighting) flips the same way: keep the highest of
-        -- the last few seconds while the wanted level is up
-        local okA, aState = pcall(function() return mgr:GetCurrentAlertSystemState() end)
-        if okA and type(aState) == "number" then
-            if aState >= (state.heldAlert or 0) then state.heldAlert, state.heldAlertAt = aState, now
-            elseif now - (state.heldAlertAt or -100) < CFG.ALERT_SEEN_HOLD then
-                pcall(function() mgr.m_eCurrentAlertState = state.heldAlert end)
-            else
-                state.heldAlert = aState
-            end
-        end
-        if seen and seen ~= 0 then lastSeenAt = now; state.seenValue = seen; state.seenHoldActive = true; return end
-        -- both players share one wanted level, so "seen" is shared too: it stays on while the
-        -- wanted level is up, and for a few seconds after either player was last seen
+        local okS, mgrSeen = pcall(function() return mgr:GetSeenState() end)
+        mgrSeen = (okS and type(mgrSeen) == "number") and mgrSeen or 0
         local okL, level = pcall(function() return mgr:GetCurrentResponseLevelIndex() end)
-        state.alertLevelNow = (okL and type(level) == "number") and level or 0
-        local wanted = okL and type(level) == "number" and level > 0 and lastSeenAt > 0
-        state.seenHoldActive = wanted or now - lastSeenAt < CFG.ALERT_SEEN_HOLD
-        if not state.seenHoldActive then state.seenHigh = nil end
-        if wanted or now - lastSeenAt < CFG.ALERT_SEEN_HOLD then
-            pcall(function() mgr.m_currentSeenState = state.seenValue or 1 end)
-            for _, pc in ipairs({ player1Controller(), state.p2 }) do
-                for _, hud in ipairs(hudWidgetsOf(pc)) do
-                    local a = subObj(hud, "BPW_UI_HUD_AlertLevel")
-                    local o = a and subObj(a, "Overlay_Seen")
-                    if o then pcall(function() o:SetVisibility(3) end) end
+        level = (okL and type(level) == "number") and level or 0
+        if level > 0 and (state.alertLevelNow or 0) == 0 then state.wantedSince = now - (CFG.ALERT_SEEN_HOLD or 3) end
+        if level == 0 then state.wantedSince = nil end
+        state.alertLevelNow = level
+        local pawns = { getPawn(player1Controller()), getPawn(state.p2) }
+        local found = { 0, 0 }
+        for _, n in ipairs(hunters()) do
+            local okT, t = pcall(function() return n.m_pCurrentTarget end)
+            if okT and valid(t) then
+                for slot = 1, 2 do
+                    if valid(pawns[slot]) and keyOf(t) == keyOf(pawns[slot]) then
+                        local okP, ps = pcall(function() return n.m_ePlayerSeenState end)
+                        local v = (okP and type(ps) == "number" and ps > 0) and ps or (mgrSeen > 0 and mgrSeen or 0)
+                        if v > found[slot] then found[slot] = v end
+                    end
                 end
             end
+        end
+        -- the game says someone's seen but nobody's hunting either player: both count
+        if mgrSeen > 0 and found[1] == 0 and found[2] == 0 then found = { mgrSeen, mgrSeen } end
+        for slot = 1, 2 do
+            if found[slot] > 0 then seen[slot].st, seen[slot].last = found[slot], now end
+        end
+        state.seenHoldActive = (state.coopSeenFor(1) or 0) > 0 or (state.coopSeenFor(2) or 0) > 0
+        if CFG.ALERT_WATCH and now >= logAt then
+            logAt = now + 1
+            log("Seen: game %d, P1 %d (held %d), P2 %d (held %d), wanted %d", mgrSeen, found[1], state.coopSeenFor(1), found[2], state.coopSeenFor(2), level)
         end
     end)
 end
 
--- Co-op "!!" card, at the card itself: the HUD tells the card how "seen" you are through
--- SetSeenLevel. While the seen hold is on (seen in the last few seconds, or wanted at all),
--- the card is never told a lower level than the highest it had, so it isn't thrown away.
+-- The card itself: the HUD tells it how "seen" you are through SetSeenLevel. In co-op each
+-- player's card is told that player's own (held) state instead of the flipping shared one,
+-- so it no longer gets thrown away and brought back.
 do
     local hooked, tries, logged = false, 0, 0
     addTickJob("seenCardHook", 1.0, function()
@@ -6035,37 +6068,29 @@ do
         tries = tries + 1
         local ok, err = pcall(function()
             RegisterHook("/Game/Blueprints/UI/HUD/BPW_UI_HUD_AlertLevel.BPW_UI_HUD_AlertLevel_C:SetSeenLevel", function(self, eState)
+                if not (valid(state.p2) and CFG.ALERT_CARD_SET ~= false and state.coopSeenFor) then return end
                 local okG, v = pcall(function() return eState:get() end)
                 if not (okG and type(v) == "number") then return end
-                local coop = valid(state.p2)
-                local out = v
-                if coop then
-                    local now = os.clock()
-                    if v > 0 then
-                        state.cardSeenAt = now
-                        if not state.cardHigh or v > state.cardHigh then state.cardHigh = v end
-                    end
-                    -- held while either player was seen in the last few seconds, or while the
-                    -- police / military are after you at all (both players share one wanted level)
-                    local hold = state.cardHigh and (now - (state.cardSeenAt or -100) < CFG.ALERT_SEEN_HOLD
-                                                     or (state.alertLevelNow or 0) > 0)
-                    if hold and v < state.cardHigh and CFG.ALERT_CARD_SET then
-                        out = state.cardHigh
-                        local okS = pcall(function() eState:set(out) end)
-                        if not okS and not state.cardSetFail then state.cardSetFail = true; log("Seen card: couldn't change the level") end
-                    elseif not hold and v == 0 then
-                        state.cardHigh = nil
-                    end
+                -- whose card is this
+                local slot = 1
+                pcall(function()
+                    local owner = self:get():GetOwningPlayer()
+                    if valid(owner) and keyOf(owner) == keyOf(state.p2) then slot = 2 end
+                end)
+                local want = state.coopSeenFor(slot) or v
+                if want ~= v then
+                    local okS = pcall(function() eState:set(want) end)
+                    if not okS and not state.cardSetFail then state.cardSetFail = true; log("Seen card: couldn't change the level") end
                 end
-                if CFG.ALERT_WATCH and logged < 80 and coop and (out ~= v or logged < 20) then
+                if CFG.ALERT_WATCH and logged < 80 then
                     logged = logged + 1
-                    log("Seen card: told %d%s", v, out ~= v and string.format(" -> kept at %d", out) or "")
+                    log("Seen card P%d: told %d%s", slot, v, want ~= v and string.format(" -> %d", want) or "")
                 end
             end)
         end)
         if ok then
             hooked = true
-            log("Seen card: watching the card's level changes")
+            log("Seen card: each player's card follows their own seen state")
         elseif tries == 1 then
             log("Seen card: not hooked yet (%s); will retry", tostring(err))
         end
