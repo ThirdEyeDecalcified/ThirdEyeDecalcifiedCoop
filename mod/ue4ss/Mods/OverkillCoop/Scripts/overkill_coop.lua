@@ -7691,8 +7691,16 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
             for _, arm in ipairs(arrayToList(pw:K2_GetComponentsByClass(StaticFindObject("/Script/Engine.SpringArmComponent")))) do
                 state.armProbe = state.armProbe or {}
                 local ak = keyOf(arm)
-                if ak and not state.armProbe[ak] then state.armProbe[ak] = arm.ProbeSize end
-                arm.ProbeSize = (state.armProbe[ak] or 12) * math.min(1, math.max(0.1, f))
+                if ak and not state.armProbe[ak] then
+                    state.armProbe[ak] = { probe = arm.ProbeSize, len = arm.TargetArmLength, test = arm.bDoCollisionTest }
+                end
+                local b0 = state.armProbe[ak] or { probe = 12, len = 300, test = true }
+                arm.ProbeSize = (b0.probe or 12) * math.min(1, math.max(0.1, f))
+                -- the camera distance goes with size: far back for the giants, and the tiny sizes
+                -- don't let walls and bumps pull the camera into Crypto (that looked first person)
+                if f > 1 then arm.TargetArmLength = (b0.len or 300) * math.min(f, CFG.SIZE_CAMERA_MAX or 8)
+                else arm.TargetArmLength = b0.len or 300 end
+                arm.bDoCollisionTest = (f >= 0.5) and (b0.test ~= false) or false
             end
         end)
         -- giants move faster and see more (wider camera); everyone else normal
@@ -8007,7 +8015,10 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
                     if valid(v) and not nameOf(v):find("Beam") then
                         local k = keyOf(v)
                         local okL, l = pcall(function() return v:K2_GetActorLocation() end)
-                        if k and okL and l then
+                        -- (the game keeps used shots in a pool: a shot "ends" when it is hidden again)
+                        local okH, hid = pcall(function() return v.bHidden end)
+                        hid = okH and hid == true
+                        if k and okL and l and not hid then
                             seenNow[k] = true
                             local e = live[k]
                             if not e then
@@ -8016,8 +8027,13 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
                                 e = { n = shortName(v), mine = mine, by = mine and inst or p1 }
                                 live[k] = e
                             end
-                            e.prev = e.at
-                            e.at = { X = l.X, Y = l.Y, Z = l.Z }
+                            -- a jump of more than 30 m in a tenth of a second: put back in the pool
+                            if e.at and math.abs(l.X - e.at.X) + math.abs(l.Y - e.at.Y) + math.abs(l.Z - e.at.Z) > 3000 then
+                                seenNow[k] = nil
+                            else
+                                e.prev = e.at
+                                e.at = { X = l.X, Y = l.Y, Z = l.Z }
+                            end
                         end
                     end
                 end
@@ -8027,7 +8043,7 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
                 local nb = #buildingList()
                 local np = 0
                 for _ in pairs(live) do np = np + 1 end
-                log("Wreck: watching %d shots now, %d buildings on this map", np, nb)
+                log("Wreck: watching %d flying shots now, %d buildings on this map", np, nb)
             end
             -- shots that just ended: did they end at a building?
             for k, e in pairs(live) do
@@ -10208,6 +10224,13 @@ end)()
               get = function() return choice[kind] or "Game default" end,
               set = function(v)
                   choice[kind] = v
+                  -- the Disintegrator's burning comes from its fire upgrades, not the projectile:
+                  -- with another projectile in it, those are off for the session (back on with default)
+                  if kind:find("Disintegrator") and state.upgSet then
+                      for _, t in ipairs({ "Weapon.DisintegratorRay.CascadeIncinerator", "Weapon.DisintegratorRay.CascadeImmolator" }) do
+                          state.upgSet(t, v == "Game default" and "game" or "off")
+                      end
+                  end
                   for _, w in ipairs(projWeapons()) do if kindOf(w) == kind then pcall(applyTo, w) end end
                   log("Projectiles: %s now shoots %s", kind, v)
               end })
@@ -10351,6 +10374,7 @@ end)()
         end
         upgState[tagName] = mode
     end
+    state.upgSet = setUpgrade
     local function owned(tagName)
         local u = unlocks()
         local ok, v = pcall(function() return u:IsUnlockedTag({ TagName = FName(tagName) }) end)
