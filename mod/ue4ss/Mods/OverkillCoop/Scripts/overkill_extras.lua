@@ -416,9 +416,9 @@ add({ key = "x_bars", page = 3, label = "Split-screen shield bars", options = { 
 add({ key = "x_meter", page = 3, label = "Concentration meter colours", options = { "Cyan & white", "Classic yellow" },
     get = function() return state.meterStyle or "Cyan & white" end,
     set = function(v) state.meterStyle = v end })
-add({ key = "x_pkblue", page = 3, label = "Blue PK: L3 / R3", options = { "Pull in / push out", "Shrink / grow" },
-    get = function() return (state.pkConfig and state.pkConfig.BlueResize) and "Shrink / grow" or "Pull in / push out" end,
-    set = function(v) if state.pkConfig then state.pkConfig.BlueResize = v == "Shrink / grow" end end })
+add({ key = "x_pkblue", page = 3, label = "Shrink / grow ray (blue PK: L3 / R3 shrink and grow instead of in / out)", options = { "Off", "On" },
+    get = function() return (state.pkConfig and state.pkConfig.BlueResize) and "On" or "Off" end,
+    set = function(v) if state.pkConfig then state.pkConfig.BlueResize = (v == "On" or v == "Shrink / grow") end end })
 
 ------------------------------------------------------------------------------------------
 -- TEST Raining people: people drop out of the sky around the players

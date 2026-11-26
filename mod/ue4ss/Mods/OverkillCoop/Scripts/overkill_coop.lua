@@ -7677,7 +7677,24 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
         local f = 1.0
         for _, e in ipairs(SIZES) do if e[1] == label then f = e[2] end end
         if who == 1 then state.trSize1 = label else state.trSize2 = label end
+        -- growing: lift first by the extra height, so a giant doesn't end up in the ground
+        pcall(function()
+            local old = pw:GetActorScale3D().Z or 1
+            if f > old then
+                local l = pw:K2_GetActorLocation()
+                pw:K2_SetActorLocation({ X = l.X, Y = l.Y, Z = l.Z + 95 * (f - old) + 30 }, false, {}, true)
+            end
+        end)
         local ok = pcall(function() pw:SetActorScale3D({ X = f, Y = f, Z = f }) end)
+        -- tiny: the camera's collision probe shrinks too (it pulled the camera into Crypto's head)
+        pcall(function()
+            for _, arm in ipairs(arrayToList(pw:K2_GetComponentsByClass(StaticFindObject("/Script/Engine.SpringArmComponent")))) do
+                state.armProbe = state.armProbe or {}
+                local ak = keyOf(arm)
+                if ak and not state.armProbe[ak] then state.armProbe[ak] = arm.ProbeSize end
+                arm.ProbeSize = (state.armProbe[ak] or 12) * math.min(1, math.max(0.1, f))
+            end
+        end)
         -- giants move faster and see more (wider camera); everyone else normal
         local giant = isGiant(label)
         -- speed goes with size: giants fast (more so the bigger), small ones slower
@@ -8005,10 +8022,30 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
                     end
                 end
             end)
+            if not state.wreckDiag then
+                state.wreckDiag = true
+                local nb = #buildingList()
+                local np = 0
+                for _ in pairs(live) do np = np + 1 end
+                log("Wreck: watching %d shots now, %d buildings on this map", np, nb)
+            end
             -- shots that just ended: did they end at a building?
             for k, e in pairs(live) do
                 if not seenNow[k] then
                     live[k] = nil
+                    if (state.wreckEnds or 0) < 6 and e.at then
+                        state.wreckEnds = (state.wreckEnds or 0) + 1
+                        local best = nil
+                        for _, b in ipairs(buildingList()) do
+                            pcall(function()
+                                local o_, e_ = {}, {}
+                                b:GetActorBounds(false, o_, e_)
+                                local d = math.max(0, math.abs(e.at.X - o_.X) - e_.X) + math.max(0, math.abs(e.at.Y - o_.Y) - e_.Y)
+                                if not best or d < best then best = d end
+                            end)
+                        end
+                        log("Wreck: shot %s ended (%s), nearest building %s cm away", e.n, e.mine and "a player's" or "an NPC's", best and string.format("%.0f", best) or "?")
+                    end
                     -- where it most likely ended: one more step along its last movement
                     if e.at and e.prev then
                         e.at = { X = e.at.X + (e.at.X - e.prev.X), Y = e.at.Y + (e.at.Y - e.prev.Y), Z = e.at.Z + (e.at.Z - e.prev.Z) }
@@ -8018,7 +8055,7 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
                             if valid(b) then
                                 local okB, o, ex = pcall(function()
                                     local o_, e_ = {}, {}
-                                    b:GetActorBounds(true, o_, e_)
+                                    b:GetActorBounds(false, o_, e_)
                                     return o_, e_
                                 end)
                                 if okB and o and o.X and ex and ex.X then
@@ -10227,6 +10264,8 @@ end)()
             if valid(c) and not knownPath[n] then local p = pathOf(c); if p then knownPath[n], knownKind[n] = p, "beam"; changed = true end end
         end
         for n, k in pairs(knownKind) do if k == "beam" then seen[n] = true end end
+        -- the Death Ray only aims and hurts when the saucer's own weapon drives it: not on the list
+        for n in pairs(seen) do if n:find("DeathRay") then seen[n] = nil end end
         if changed then writeKnown() end
         local names = {}
         for n in pairs(seen) do names[#names + 1] = n end
