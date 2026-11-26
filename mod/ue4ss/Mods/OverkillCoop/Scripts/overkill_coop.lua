@@ -2969,7 +2969,7 @@ local function cycleSkin(pc, dir, label)
     state.skinIdx[label] = idx
     local name = list[idx]
     local tag = { TagName = FName(name) }
-    local extra = label == "P3" or label == "P4"
+    local extra = label == "P3" or label == "P4" or label == "P1V"   -- P1V: Player 1's look only (no save)
     local ok, err = true, nil
     if extra then
         -- Players 3 and 4: the game's skin call also changed Player 1, so only their own body's
@@ -8632,7 +8632,7 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
         end
     end
 
-    local PAGES = { "Welcome", "Controls", "Players", "World", "Spawn & travel", "Active", "Known issues" }
+    local PAGES = { "Welcome", "Controls", "Players", "World", "Spawn & travel", "Active", "Known issues", "Projectiles", "Upgrades" }
     -- the order the tabs are shown and stepped through (page numbers stay as they are)
     local TAB_ORDER = { 1, 6, 2, 3, 4, 5, 7 }
     local function tabStep(page, dir)
@@ -9809,4 +9809,233 @@ end)()
             if fixes <= 5 then log("Primary player was %s: set back to Player 1", shortName(cur)) end
         end
     end)
+end)()
+
+------------------------------------------------------------------------------------------
+-- Trainer: Projectiles page (each gun, the players' and the NPCs', can shoot any projectile
+-- the game has loaded), Upgrades page (turn upgrades on/off for this session only), DNA,
+-- and Player 1's look without touching the save.
+------------------------------------------------------------------------------------------
+;(function()
+    local PAGE_PROJ, PAGE_UPG, PAGE_PLAYERS = 8, 9, 3
+    local add = function(e) state.trainerExtras[#state.trainerExtras + 1] = e end
+    local function short(n) return (n or ""):match("([%w_%-]+)$") or n end
+
+    -- ---------- projectiles ----------
+    local projList, projByName = { "Game default" }, {}
+    local function refreshProjectiles()
+        local seen = {}
+        for _, c in ipairs(FindAllOf("BlueprintGeneratedClass") or {}) do
+            if valid(c) then
+                local n = short(nameOf(c))
+                if n:find("Projectile") and not n:find("^Default__") and not n:find("^SKEL_") and not n:find("^REINST_") and not seen[n] then
+                    local okS, isP = pcall(function() return c:IsChildOf(StaticFindObject("/Script/BFGCore.BFGProjectile")) end)
+                    if not okS or isP then seen[n] = true; projByName[n] = c end
+                end
+            end
+        end
+        local names = {}
+        for n in pairs(seen) do names[#names + 1] = n end
+        table.sort(names)
+        for i = #projList, 2, -1 do projList[i] = nil end
+        for _, n in ipairs(names) do projList[#projList + 1] = n end
+    end
+    -- weapon kinds: one bar per kind of gun (class name without the _C_123 instance part)
+    local function kindOf(w)
+        local okC, c = pcall(function() return w:GetClass() end)
+        return okC and valid(c) and short(nameOf(c)) or nil
+    end
+    local PLAYER_GUNS = { "DisintegratorRay", "IonDetonator", "AnalProbe" }
+    local function isPlayerGun(k) for _, g in ipairs(PLAYER_GUNS) do if k:find(g) then return true end end return false end
+    local choice = {}       -- kind -> projectile name
+    local original = {}     -- weapon key -> { a, b, c } original cached classes
+    local npcKinds = {}     -- list of NPC weapon kinds seen
+    local function projWeapons()
+        local out = {}
+        pcall(function()
+            local arr = {}
+            getStatics():GetAllActorsOfClass(getWorld(), StaticFindObject("/Script/BFGCore.BFGWeapon_BaseProjectile"), arr)
+            for _, a in ipairs(arr) do
+                local v = a
+                if type(a) == "userdata" and not valid(a) then pcall(function() v = a:get() end) end
+                if valid(v) then out[#out + 1] = v end
+            end
+        end)
+        return out
+    end
+    local function applyTo(w)
+        local k = kindOf(w)
+        if not k then return end
+        local want = choice[k]
+        local wk = keyOf(w)
+        if want and want ~= "Game default" then
+            local cls = projByName[want]
+            if not valid(cls) then return end
+            if not original[wk] then
+                local o = {}
+                pcall(function() o[1] = w.m_pCachedProjectileClass end)
+                pcall(function() o[2] = w.m_pCachedAlternateProjectileClass end)
+                pcall(function() o[3] = w.m_pCachedSecondAlternateProjectileClass end)
+                original[wk] = o
+            end
+            pcall(function() w.m_pCachedProjectileClass = cls end)
+            pcall(function() w.m_pCachedAlternateProjectileClass = cls end)
+            pcall(function() w.m_pCachedSecondAlternateProjectileClass = cls end)
+        elseif original[wk] then
+            local o = original[wk]
+            if o[1] then pcall(function() w.m_pCachedProjectileClass = o[1] end) end
+            if o[2] then pcall(function() w.m_pCachedAlternateProjectileClass = o[2] end) end
+            if o[3] then pcall(function() w.m_pCachedSecondAlternateProjectileClass = o[3] end) end
+            original[wk] = nil
+        end
+    end
+    local function anyChoice() for _, v in pairs(choice) do if v ~= "Game default" then return true end end return false end
+    addTickJob("projectileSwap", 1.0, function()
+        if not anyChoice() and not next(original) then return end
+        for _, w in ipairs(projWeapons()) do pcall(applyTo, w) end
+    end)
+    onWorldChange(function() original = {} end)
+    local function projRow(kind, label)
+        add({ key = "proj_" .. kind, page = PAGE_PROJ, label = label, options = projList,
+              show = function() return true end,
+              get = function() return choice[kind] or "Game default" end,
+              set = function(v)
+                  choice[kind] = v
+                  for _, w in ipairs(projWeapons()) do if kindOf(w) == kind then pcall(applyTo, w) end end
+                  log("Projectiles: %s now shoots %s", kind, v)
+              end })
+    end
+    -- the players' guns (fixed rows), plus one row per NPC gun kind found on this map
+    projRow("DisintegratorRayBP_C", "Disintegrator Ray shoots")
+    projRow("BP_Weapon_IonDetonator_C", "Ion Detonator shoots")
+    projRow("BP_Weapon_AnalProbe_C", "Anal Probe shoots")
+    add({ key = "act_projscan", page = PAGE_PROJ, label = "Look again for projectiles and NPC guns (after loading a new area)",
+          options = { "(choose)", "Scan now" }, show = function() return true end, get = function() return "(choose)" end,
+          set = function(v)
+              if v ~= "Scan now" then return end
+              refreshProjectiles()
+              local found = 0
+              for _, w in ipairs(projWeapons()) do
+                  local k = kindOf(w)
+                  if k and not isPlayerGun(k) and not npcKinds[k] then
+                      npcKinds[k] = true
+                      found = found + 1
+                      projRow(k, "NPC gun " .. k:gsub("^BP_Weapon_", ""):gsub("_C$", "") .. " shoots")
+                  end
+              end
+              log("Projectiles: %d projectile types, %d new NPC gun kinds (close and reopen the trainer to see new rows)", #projList - 1, found)
+          end })
+    -- first scan once the world is up
+    local scanned = false
+    onWorldChange(function() scanned = false end)
+    addTickJob("projectileFirstScan", 5.0, function()
+        if scanned then return end
+        scanned = true
+        refreshProjectiles()
+        for _, w in ipairs(projWeapons()) do
+            local k = kindOf(w)
+            if k and not isPlayerGun(k) and not npcKinds[k] then
+                npcKinds[k] = true
+                projRow(k, "NPC gun " .. k:gsub("^BP_Weapon_", ""):gsub("_C$", "") .. " shoots")
+            end
+        end
+    end)
+
+    -- ---------- upgrades (this session only) ----------
+    local upgrades = {}     -- { tag = "Upgrade.X", label = "Weapon: name" }
+    local upgState = {}     -- tag -> "Game (save)" / "Off" / "On"
+    local UPG_OPTS = { "Game (save)", "Off (this session)", "On (this session)" }
+    local function unlocks()
+        local ps = subObj(player1Controller(), "PlayerState")
+        return ps and subObj(ps, "m_pUnlocks")
+    end
+    local function setUpgrade(tagName, mode)
+        local u = unlocks()
+        if not u then log("Upgrades: no unlock list yet") return end
+        local tag = { TagName = FName(tagName) }
+        if mode == "Off (this session)" then
+            pcall(function() u:LockRemoveTag(tag, false) end)
+            pcall(function() u:PlayerState_LockTag(getWorld(), tag) end)
+        elseif mode == "On (this session)" then
+            pcall(function() u:RemoveLockedTag(tag) end)
+            pcall(function() u:UnlockTag(tag, false) end)
+        else
+            pcall(function() u:RemoveLockedTag(tag) end)
+            pcall(function() u:LockRemoveTag(tag, false) end)
+        end
+        upgState[tagName] = mode
+    end
+    local function scanUpgrades()
+        local seen = {}
+        for _, a in ipairs(upgrades) do seen[a.tag] = true end
+        local n = 0
+        for _, a in ipairs(FindAllOf("BFGDataAssetPoxLabUpgrade") or {}) do
+            if valid(a) then
+                local okT, t = pcall(function() return a.m_oUpgradeTag.TagName:ToString() end)
+                if okT and t and t ~= "None" and not seen[t] then
+                    seen[t] = true
+                    local okW, wn = pcall(function() return a.m_strWeaponName:ToString() end)
+                    local okU, un = pcall(function() return a.m_strUpgradeName:ToString() end)
+                    local label = ((okW and wn ~= "") and (wn .. ": ") or "") .. ((okU and un ~= "") and un or short(t))
+                    upgrades[#upgrades + 1] = { tag = t, label = label }
+                    n = n + 1
+                    local tagName = t
+                    add({ key = "upg_" .. t:gsub("[^%w]", "_"), page = PAGE_UPG, label = label, options = UPG_OPTS,
+                          show = function() return true end,
+                          get = function() return upgState[tagName] or "Game (save)" end,
+                          set = function(v) setUpgrade(tagName, v); log("Upgrades: %s -> %s", tagName, v) end })
+                end
+            end
+        end
+        return n
+    end
+    add({ key = "upg_all", page = PAGE_UPG, label = "All upgrades (this session only, the save keeps yours)",
+          options = { "Game (save)", "Base Crypto (all off)", "Fully upgraded (all on)" }, show = function() return true end,
+          get = function() return state.upgAll or "Game (save)" end,
+          set = function(v)
+              state.upgAll = v
+              local mode = (v == "Base Crypto (all off)" and "Off (this session)") or (v == "Fully upgraded (all on)" and "On (this session)") or "Game (save)"
+              for _, a in ipairs(upgrades) do setUpgrade(a.tag, mode) end
+              log("Upgrades: all -> %s (%d upgrades)", v, #upgrades)
+          end })
+    add({ key = "act_upgscan", page = PAGE_UPG, label = "Look again for upgrades (they list once the game has loaded them)",
+          options = { "(choose)", "Scan now" }, show = function() return true end, get = function() return "(choose)" end,
+          set = function(v) if v == "Scan now" then log("Upgrades: %d new (reopen the trainer)", scanUpgrades()) end end })
+    local upgScanned = false
+    onWorldChange(function() upgScanned = false end)
+    addTickJob("upgradeFirstScan", 5.0, function()
+        if upgScanned then return end
+        upgScanned = true
+        local n = scanUpgrades()
+        if n > 0 then log("Upgrades: %d listed for the trainer", n) end
+        -- re-apply this session's choices after a map change
+        for t, m in pairs(upgState) do if m ~= "Game (save)" then setUpgrade(t, m) end end
+    end)
+
+    -- ---------- DNA (this one does go into the save) ----------
+    add({ key = "act_dna", page = PAGE_PLAYERS, label = "Give DNA (this DOES go into your save)",
+          options = { "(pick an amount)", "+1,000", "+5,000", "+10,000", "+50,000", "+100,000" },
+          show = function() return true end, get = function() return "(pick an amount)" end,
+          set = function(v)
+              local n = tonumber((v:gsub("[^%d]", "")))
+              if not n or n <= 0 then return end
+              local pc = player1Controller()
+              local okC = pcall(function() pc.CheatManager:AddDNA(n) end)
+              if not okC then
+                  local ps = subObj(pc, "PlayerState")
+                  pcall(function() ps.m_iDNA = (ps.m_iDNA or 0) + n end)
+              end
+              local ps = subObj(pc, "PlayerState")
+              local okD, now = pcall(function() return ps.m_iDNA end)
+              log("DNA: +%d (%s) -> %s", n, okC and "cheat manager" or "direct", okD and tostring(now) or "?")
+          end })
+
+    -- ---------- Player 1's look, without the save ----------
+    add({ key = "act_p1look", page = PAGE_PLAYERS, label = "Player 1 look (this session only, not saved)",
+          options = { "(choose)", "Next look", "Previous look" }, show = function() return true end,
+          get = function() return "(choose)" end,
+          set = function(v)
+              if v == "Next look" then cycleSkin(player1Controller(), 1, "P1V")
+              elseif v == "Previous look" then cycleSkin(player1Controller(), -1, "P1V") end
+          end })
 end)()
