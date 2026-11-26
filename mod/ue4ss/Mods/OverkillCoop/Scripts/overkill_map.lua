@@ -302,6 +302,10 @@ openInner = function()
     M.info = place(canvas, info, 0, 0)
     M.infoW = info
     pcall(function() tree.RootWidget = canvas end)
+    -- the borrowed widget class starts (and keeps setting itself) hidden: made visible here
+    -- and every frame while the map is open (the wheel needs the same)
+    pcall(function() w:SetVisibility(4) end)
+    pcall(function() w:SetRenderOpacity(1.0) end)
     local okV, errV = pcall(function() w:AddToViewport(160) end)
     if not okV then mlog("can't show it: %s", tostring(errV)) end
     local pw = OK.getPawn(pc)
@@ -354,6 +358,12 @@ OK.addTickJob("mapView", 0.0, function()
     lastT = now
     local pc = OK.player1Controller()
     if not valid(pc) or not valid(M.widget) then close() return end
+    pcall(function()
+        local w = M.widget
+        if not w:IsVisible() then w:SetVisibility(4) end
+        w:SetRenderOpacity(1.0)
+        if M.canvas then M.canvas:SetVisibility(4); M.canvas:SetRenderOpacity(1.0) end
+    end)
     -- cursor
     local ax, ay = axis(pc, "Gamepad_LeftX"), axis(pc, "Gamepad_LeftY")
     if math.abs(ax) < 0.15 then ax = 0 end
