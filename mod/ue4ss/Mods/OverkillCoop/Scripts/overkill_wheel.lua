@@ -4222,7 +4222,7 @@ local function lbGateTick()
         if valid(pc) and kbDown(pc, LB_KEY) then anyDown = true end
     end
     if pawns == 0 then return end                       -- loading: leave it as it is
-    local want = CFG.MIND_WHEEL and CFG.LB_TAKE_FROM_GAME ~= false and allFoot or false
+    local want = CFG.MIND_WHEEL and CFG.LB_TAKE_FROM_GAME ~= false and (allFoot or CFG.SAUCER_WHEEL ~= false) or false
     if want == (lbGate.removed ~= nil) or anyDown then return end
     lbSetTaken(want)
 end
@@ -4498,3 +4498,221 @@ if Key.DECIMAL ~= nil then
         end)
     end)
 end
+
+------------------------------------------------------------------------------------------
+-- The saucer's weapon wheel: the same idea as on foot, for each player in their own saucer,
+-- on their own part of the screen and only as big as it needs to be. Quick press of LB:
+-- next saucer weapon. Hold LB: the wheel (Y / X / B / A pick, let go to switch). Works with
+-- two saucers, or one player in a saucer and the other on foot. (A two-seater saucer will
+-- come later: the wheel follows whoever's pad is pressing LB, whatever body they drive.)
+------------------------------------------------------------------------------------------
+;(function()
+    if CFG.SAUCER_WHEEL == nil then CFG.SAUCER_WHEEL = true end
+    local UFO_WEAPONS = {
+        { key = "Gamepad_FaceButton_Top",    btn = "Y", label = "Death Ray",             match = { "DeathRay", "Death_Ray" },
+          icon = { { "icon", "deathray" }, { "icon", "death", "ray" }, { "ufo", "death" } } },
+        { key = "Gamepad_FaceButton_Left",   btn = "X", label = "Abducto-Beam",          match = { "Abduct" },
+          icon = { { "icon", "abduct" }, { "ufo", "abduct" } } },
+        { key = "Gamepad_FaceButton_Right",  btn = "B", label = "Sonic Boom",            match = { "SonicBoom", "Sonic" },
+          icon = { { "icon", "sonic" }, { "ufo", "sonic" } } },
+        { key = "Gamepad_FaceButton_Bottom", btn = "A", label = "Quantum Deconstructor", match = { "Quantum", "Deconstruct", "Decontruct" },
+          icon = { { "icon", "quantum" }, { "ufo", "quantum" }, { "decon" } } },
+    }
+    local function inSaucer(pawn) return valid(pawn) and OK.nameOf(pawn):find("UFO") ~= nil end
+    state.wheelInSaucer = inSaucer
+    local function ufoFind(list, e)
+        for _, w in ipairs(list) do
+            if valid(w) then
+                local n = OK.nameOf(w)
+                for _, m in ipairs(e.match) do if n:find(m, 1, true) then return w end end
+            end
+        end
+        return nil
+    end
+    local function currentIndex(list, cur)
+        for k, e in ipairs(UFO_WEAPONS) do
+            local w = ufoFind(list, e)
+            if w and valid(cur) and OK.keyOf(w) == OK.keyOf(cur) then return k end
+        end
+        return nil
+    end
+    local function ufoEquip(i, pawn, k)
+        local list, cur, eq = weaponsOf(pawn)
+        local w = ufoFind(list, UFO_WEAPONS[k])
+        if not (eq and w) then wlog("P%d saucer: %s not found (not unlocked yet?)", i, UFO_WEAPONS[k].label) return end
+        if valid(cur) and OK.keyOf(cur) == OK.keyOf(w) then return end
+        local ok = pcall(function() eq:RequestWeaponEquipped(w) end)
+        if not ok then ok = pcall(function() eq:RequestWeaponEquippedByClass(w:GetClass()) end) end
+        wlog("P%d saucer switches to %s (%s)", i, UFO_WEAPONS[k].label, ok and "ok" or "the game refused")
+    end
+    local function ufoCycle(i, pawn)
+        local list, cur = weaponsOf(pawn)
+        local at = currentIndex(list, cur) or 0
+        for step = 1, #UFO_WEAPONS do
+            local k = (at + step - 1) % #UFO_WEAPONS + 1
+            if k ~= at and ufoFind(list, UFO_WEAPONS[k]) then
+                wlog("P%d saucer LB tap: next weapon %s", i, UFO_WEAPONS[k].label)
+                ufoEquip(i, pawn, k)
+                return
+            end
+        end
+        if not state.ufoListLogged then
+            state.ufoListLogged = true
+            local names = {}
+            for _, w in ipairs(list) do if valid(w) then names[#names + 1] = OK.shortName(w) end end
+            wlog("P%d saucer: no other weapon found (the saucer has: %s)", i, table.concat(names, ", "))
+        end
+    end
+
+    local function buildUfoOverlay(i, pc)
+        local w, tree = newHost(pc)
+        if not w then return nil end
+        local root = U("Overlay", tree, nm("URoot"))
+        -- a panel just big enough for the weapons (not the whole screen)
+        local panel = border(tree, { R = 0.0, G = 0.06, B = 0.08, A = 0.72 }, 14)
+        pcall(function() local sl = root:AddChildToOverlay(panel); sl:SetHorizontalAlignment(2); sl:SetVerticalAlignment(2) end)
+        local col = U("VerticalBox", tree, nm("UCol"))
+        pcall(function() panel:SetContent(col) end)
+        local function addV(parent, child, pad)
+            local ok, sl = pcall(function() return parent:AddChildToVerticalBox(child) end)
+            if ok and sl then
+                pcall(function() sl:SetHorizontalAlignment(2) end)
+                if pad then pcall(function() sl:SetPadding({ Left = 0, Top = pad, Right = 0, Bottom = pad }) end) end
+            end
+        end
+        addV(col, textBlock(tree, "SAUCER  WEAPONS", 22, COL.cyan), 4)
+        local cross = U("UniformGridPanel", tree, nm("UCross"))
+        pcall(function() cross:SetSlotPadding({ Left = 4, Top = 4, Right = 4, Bottom = 4 }) end)
+        local spots = { Y = { 0, 1 }, X = { 1, 0 }, B = { 1, 2 }, A = { 2, 1 } }
+        local cards = {}
+        for k, e in ipairs(UFO_WEAPONS) do
+            local b = border(tree, { R = 0, G = 0, B = 0, A = 0 }, 4)
+            local v = U("VerticalBox", tree, nm("UCardV"))
+            local btnSp = findSprite("button " .. e.btn, { { "durango_" .. e.btn:lower() .. "_png" } })
+            if btnSp then
+                local bi = U("Image", tree, nm("UBtn"))
+                setSprite(bi, btnSp)
+                addV(v, sized(tree, bi, 28, 28))
+            else
+                addV(v, textBlock(tree, e.btn, 16, COL.yellow))
+            end
+            local icon = nil
+            local sp = findSprite("saucer " .. e.label, e.icon)
+            if sp then
+                icon = U("Image", tree, nm("UIcon"))
+                setSprite(icon, sp)
+                addV(v, sized(tree, icon, 60, 60))
+            end
+            local label = textBlock(tree, e.label, 12, COL.white)
+            pcall(function() label:SetAutoWrapText(true) end)
+            pcall(function() label:SetJustification(1) end)
+            addV(v, label)
+            pcall(function() b:SetContent(v) end)
+            gridAdd(cross, sized(tree, b, 132, icon and 124 or 70), spots[e.btn][1], spots[e.btn][2])
+            cards[k] = { label = label, icon = icon }
+        end
+        gridAdd(cross, sized(tree, U("SizeBox", tree, nm("UMid")), 30, 30), 1, 1)
+        addV(col, cross, 4)
+        addV(col, textBlock(tree, "Let go of LB to switch", 11, COL.cyanDim), 2)
+        pcall(function() tree.RootWidget = root end)
+        pcall(function() w:SetVisibility(4) end)
+        -- never more than half the player's part of the screen in either direction
+        pcall(function()
+            local wll = StaticFindObject("/Script/UMG.Default__WidgetLayoutLibrary")
+            local vs = wll:GetViewportSize(OK.getWorld())
+            local dpi = wll:GetViewportScale(OK.getWorld())
+            dpi = (type(dpi) == "number" and dpi > 0) and dpi or 1
+            local aw, ah = areaOf(i, { X = vs.X / dpi, Y = vs.Y / dpi })
+            local dw, dh = 460, 460
+            pcall(function()
+                root:ForceLayoutPrepass()
+                local ds = root:GetDesiredSize()
+                if ds and ds.X > 100 and ds.Y > 100 then dw, dh = ds.X, ds.Y end
+            end)
+            local share = CFG.SAUCER_WHEEL_SHARE or 0.6
+            local kk = math.min(1.0, aw * share / dw, ah * share / dh)
+            if kk < 0.999 then
+                pcall(function() root:SetRenderTransformPivot({ X = 0.5, Y = 0.5 }) end)
+                pcall(function() root:SetRenderScale({ X = kk, Y = kk }) end)
+            end
+        end)
+        if not pcall(function() w:AddToPlayerScreen(150) end) then return nil end
+        return { widget = w, cards = cards }
+    end
+    local function refreshUfo(p, pawn)
+        local o = p.ufoOverlay
+        if not o then return end
+        local list, cur = weaponsOf(pawn)
+        local at = currentIndex(list, cur)
+        for k, e in ipairs(UFO_WEAPONS) do
+            local c = o.cards[k]
+            local have = ufoFind(list, e) ~= nil
+            local picked = p.ufoPending == k
+            local col = not have and COL.grey or (picked and COL.yellow or (k == at and COL.cyan or COL.white))
+            setColor(c.label, col)
+            if c.icon then
+                pcall(function() c.icon:SetColorAndOpacity(not have and { R = 0.4, G = 0.4, B = 0.4, A = 0.5 } or (picked and COL.yellow or (k == at and COL.cyan or { R = 0.85, G = 0.9, B = 0.95, A = 0.85 }))) end)
+                local sc = picked and 1.15 or 1.0
+                pcall(function() c.icon:SetRenderScale({ X = sc, Y = sc }) end)
+            end
+        end
+    end
+    local function closeUfo(p)
+        if p.ufoOverlay and valid(p.ufoOverlay.widget) then pcall(function() p.ufoOverlay.widget:RemoveFromParent() end) end
+        p.ufoOverlay = nil
+        if p.ufoInputOff then
+            local io2 = p.ufoInputOff
+            p.ufoInputOff = nil
+            if valid(io2.pawn) then pcall(function() io2.pawn:EnableInput(io2.pc) end) end
+        end
+    end
+    OK.onWorldChange(function() for k = 1, 4 do P[k].ufoOverlay, P[k].ufoInputOff, P[k].ufoLbAt = nil, nil, nil end end)
+
+    OK.addTickJob("saucerWheel", 0.0, function()
+        if not (CFG.MIND_WHEEL and CFG.SAUCER_WHEEL ~= false) then
+            for k = 1, 4 do if P[k].ufoOverlay or P[k].ufoInputOff then closeUfo(P[k]) end end
+            return
+        end
+        for i, pc in ipairs(controllers()) do
+            local p = P[i]
+            local pawn = getPawn(pc)
+            if not inSaucer(pawn) or state.trainerOpen then
+                if p.ufoOverlay or p.ufoInputOff then closeUfo(p) end
+                p.ufoLbAt = nil
+            else
+                local lb = valid(pc) and kbDown(pc, "Gamepad_LeftShoulder")
+                local tapT = CFG.LB_TAP_TIME or 0.25
+                pcall(closeGameWheel, pawn)          -- in case the game's own wheel still opens
+                if lb then
+                    p.ufoLbAt = p.ufoLbAt or os.clock()
+                    if not p.ufoOverlay and os.clock() - p.ufoLbAt >= tapT then
+                        p.ufoOverlay = buildUfoOverlay(i, pc)
+                        p.ufoPending = nil
+                        p.down = p.down or {}
+                        for _, e in ipairs(UFO_WEAPONS) do p.down[e.key] = kbDown(pc, e.key) end
+                        -- the face buttons only pick weapons while it's open
+                        if not p.ufoInputOff then
+                            pcall(function() pawn:DisableInput(pc) end)
+                            p.ufoInputOff = { pawn = pawn, pc = pc }
+                        end
+                        if p.ufoOverlay and not p.ufoLogged then p.ufoLogged = true; wlog("P%d's saucer wheel works", i) end
+                    end
+                    if p.ufoOverlay then
+                        for k, e in ipairs(UFO_WEAPONS) do if edge(p, pc, e.key) then p.ufoPending = k end end
+                        refreshUfo(p, pawn)
+                    end
+                elseif p.ufoLbAt then
+                    local short = os.clock() - p.ufoLbAt < tapT
+                    p.ufoLbAt = nil
+                    local pick = p.ufoPending
+                    p.ufoPending = nil
+                    local wasOpen = p.ufoOverlay ~= nil
+                    closeUfo(p)
+                    if pick then OK.later(0.1, "ufoEquip" .. i, function() ufoEquip(i, pawn, pick) end)
+                    elseif short and not wasOpen then ufoCycle(i, pawn) end
+                end
+            end
+        end
+    end)
+    wlog("Saucer weapon wheel ready (LB in a saucer)")
+end)()

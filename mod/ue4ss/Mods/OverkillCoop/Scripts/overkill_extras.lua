@@ -829,6 +829,7 @@ local function feature(key, label, flags, coop, note)
         end })
 end
 feature("f_wheel", "Mind & weapons wheel on LB (off: the game's own wheel)", { "MIND_WHEEL" }, true)
+feature("f_saucerwheel", "Saucer weapon wheel on LB (each player their own; off: the game's)", { "SAUCER_WHEEL" }, true)
 feature("f_powers", "Mind powers on LT (the mod's new powers)", { "MIND_POWERS" })
 feature("f_panel", "Power panel and concentration meter", { "WHEEL_PANEL" })
 add({ key = "f_pk", page = 1, label = "PK overhaul (hold / push / pull, sizes, throws)", options = { "On", "Off" },
