@@ -134,7 +134,7 @@ local POWERS = {
     { name = "Overload Mutation",  cost = "3",         ready = true, beta = true, cast = "overload",
       desc = "LT: someone glows radioactive green like the mutant cows, and blows up like one when they die." },
     { name = "Furon Sentry Probe", cost = "drain",         ready = true, beta = true, cast = "sentry",
-      desc = "LT: a drone hovers over your shoulder and shoots enemies near you. It runs on the bar; LT again sends it home." },
+      desc = "LT: a drone hovers over your shoulder and shoots enemies near you, like the second game's Gastro. Tap LT at someone: it flies over and goes after them. Hold LT: rapid fire (1 dot). Tap LT at nobody: send it home." },
 }
 
 -- Colours in the game's HUD palette
@@ -1715,7 +1715,7 @@ local POWER_COLOR = {
     ["Free Fear"] = { R = 1.0, G = 0.9, B = 0.1 },        ["Zero-G Cone"] = { R = 0.9, G = 0.9, B = 1.0 },
     ["Psychic Tether"] = { R = 1.0, G = 0.75, B = 0.2 },  ["Body Snatch"] = { R = 0.2, G = 1.0, B = 0.6 },
     ["Smitten"] = { R = 1.0, G = 0.6, B = 0.85 },         ["Mind Flash"] = { R = 1.0, G = 1.0, B = 0.6 },
-    ["Super Baller Disc"] = { R = 0.6, G = 0.2, B = 1.0 },
+    ["Super Baller Disc"] = { R = 0.6, G = 0.2, B = 1.0 }, ["Furon Sentry Probe"] = { R = 0.3, G = 0.9, B = 1.0 },
 }
 local function tintArc(a, c)
     if not (valid(a) and c) then return end
@@ -1749,7 +1749,7 @@ local MARK_TEXT = {
     ["Riot Hysteria"] = "BERSERK", ["Overload Mutation"] = "OVERLOAD", ["Kinetic Overload"] = "BOUNCY",
     ["Pyrokinesis"] = "BURNING", ["Free Fear"] = "SCARED", ["Free Love"] = "GROOVY", ["Cryokinesis"] = "FROZEN",
     ["Zero-G Cone"] = "FLOATING", ["Psychic Tether"] = "TETHERED", ["Psychic Ragdoll"] = "LIMP",
-    ["Smitten"] = "SMITTEN", ["Mind Flash"] = "STUNNED", ["Super Baller Disc"] = "DISLOCATED",
+    ["Smitten"] = "SMITTEN", ["Mind Flash"] = "STUNNED", ["Super Baller Disc"] = "DISLOCATED", ["Furon Sentry Probe"] = "MARKED",
 }
 local marks = {}       -- npc key -> { n, power, untilT, labels = { [slot] = textActor } }
 local textClass = nil
@@ -3612,10 +3612,49 @@ OK.onWorldChange(function() if OK.later then OK.later(12, "powerAssets", preload
 if OK.later then OK.later(12, "powerAssets", preloadPowerAssets) end
 
 -- Furon Sentry Probe: a little drone over your shoulder that zaps enemies near you
-CAST.sentry = function(i, p, pc, pawn, pressed)
+default("SENTRY_MARK_SECONDS", 8)      -- Gastro mark: how long the drone goes after who you marked
+default("SENTRY_MARK_RANGE", 4000)
+default("SENTRY_ORBIT", 380)           -- how far round the marked person it circles (cm)
+default("SENTRY_HOVER", 320)           -- ...and how high above them
+default("SENTRY_CHARGE_SECONDS", 0.9)  -- hold LT this long for rapid fire
+default("SENTRY_RAPID_SECONDS", 3)
+default("SENTRY_RAPID_INTERVAL", 0.12)
+default("SENTRY_RAPID_SLICE", 0.05)
+CAST.sentry = function(i, p, pc, pawn, pressed, held, dt)
+    -- with the drone out, LT works like the second game's Gastro launcher
+    if p.sentry then
+        local s0 = p.sentry
+        if s0.skipHold then if not held then s0.skipHold = nil end return end   -- the press that called it
+        if held then
+            s0.holdT = (s0.holdT or 0) + (dt or 0.03)
+            if s0.holdT >= (CFG.SENTRY_CHARGE_SECONDS or 0.9) and not s0.charged then
+                s0.charged = true
+                if (p.pool or 0) + 1e-6 >= DOT then
+                    p.pool = p.pool - DOT
+                    s0.rapidUntil = os.clock() + (CFG.SENTRY_RAPID_SECONDS or 3)
+                    s0.zapAt = 0
+                    wlog("P%d Sentry Probe: rapid fire!", i)
+                else wlog("P%d: not enough concentration for rapid fire", i) end
+            end
+            return
+        end
+        local tap = s0.holdT and s0.holdT < 0.35
+        s0.holdT, s0.charged = nil, nil
+        if not tap then return end
+        local n = aimedNPC(pc, pawn, CFG.SENTRY_MARK_RANGE or 4000)
+        if n and n ~= s0.mark then
+            s0.mark, s0.markUntil = n, os.clock() + (CFG.SENTRY_MARK_SECONDS or 8)
+            mark(n, "Furon Sentry Probe", CFG.SENTRY_MARK_SECONDS or 8)
+            wlog("P%d Sentry Probe: marked %s", i, OK.nameOf(n))
+        elseif n then
+            s0.mark = nil
+            wlog("P%d Sentry Probe: mark off", i)
+        else
+            s0.untilT = 0; wlog("P%d Sentry Probe: sent home", i)
+        end
+        return
+    end
     if not pressed then return end
-    -- LT again: send it home
-    if p.sentry then p.sentry.untilT = 0; wlog("P%d Sentry Probe: sent home", i) return end
     if (p.pool or 0) < DOT then wlog("P%d: not enough concentration", i) return end
     local me = locOf(pawn)
     if not me then return end
@@ -3641,7 +3680,7 @@ CAST.sentry = function(i, p, pc, pawn, pressed)
             end
         end)
     end
-    local s = { untilT = os.clock() + CFG.SENTRY_SECONDS, zapAt = 0, drone = drone }
+    local s = { untilT = os.clock() + CFG.SENTRY_SECONDS, zapAt = 0, drone = drone, skipHold = true }
     p.sentry = s
     local myPawn = pawn
     -- ride along on the player (the engine moves it with Crypto every frame, so no stutter);
@@ -3661,12 +3700,46 @@ CAST.sentry = function(i, p, pc, pawn, pressed)
         lastT = nowT
         p.pool = (p.pool or 0) - step * (1 / CFG.SENTRY_SECONDS + DOT / CFG.POWER_DOT_SECONDS)
         if p.pool <= 0 then p.pool = 0; wlog("P%d Sentry Probe: out of concentration", i) return false end
-        p.powerLabel = "Sentry Probe  (LT: send home)"
+        local t = os.clock()
+        local rapid = (s.rapidUntil or 0) > t
+        if s.holdT and s.holdT > 0.2 and not s.charged then
+            local f = math.min(1, s.holdT / (CFG.SENTRY_CHARGE_SECONDS or 0.9))
+            p.powerLabel = "Sentry Probe  charging " .. string.rep("|", math.floor(f * 6 + 0.5)) .. string.rep(".", 6 - math.floor(f * 6 + 0.5))
+        else
+            p.powerLabel = rapid and "Sentry Probe  RAPID FIRE" or (s.mark and "Sentry Probe  after your mark" or "Sentry Probe  (tap LT: mark, hold: rapid)")
+        end
         local l = locOf(myPawn)
         if not l then return false end
-        local t = os.clock()
         local fx0, fy0 = camDir(pc)
         local pos
+        -- Gastro style: a marked person gets the drone. It leaves your shoulder, circles above
+        -- them and keeps on them until the mark runs out, then flies back.
+        local markOn = s.mark
+        if markOn and (not valid(markOn) or t >= (s.markUntil or 0) or (state.deadChar and state.deadChar(markOn))) then
+            s.mark, markOn = nil, nil
+        end
+        if markOn and valid(drone) then
+            if s.attached then
+                pcall(function() drone:K2_DetachFromActor(1, 1, 1) end)
+                s.attached, s.onMesh, s.flying = false, false, true
+                s.pos = locOf(drone)
+            end
+            s.flying = true
+            local ml = locOf(markOn)
+            if ml then
+                local dtt = math.min(0.1, t - (s.at or t)); s.at = t
+                s.orbit = (s.orbit or math.random() * 6.28) + dtt * 0.9
+                local r = CFG.SENTRY_ORBIT or 380
+                local want2 = { X = ml.X + math.cos(s.orbit) * r, Y = ml.Y + math.sin(s.orbit) * r, Z = ml.Z + (CFG.SENTRY_HOVER or 320) + math.sin(t * 2.3) * 40 }
+                s.pos = s.pos or want2
+                local k = math.min(1, dtt * 3)
+                s.pos = { X = s.pos.X + (want2.X - s.pos.X) * k, Y = s.pos.Y + (want2.Y - s.pos.Y) * k, Z = s.pos.Z + (want2.Z - s.pos.Z) * k }
+                pos = s.pos
+                moveTo(drone, pos)
+                local yaw = math.deg(math.atan(ml.Y - pos.Y, ml.X - pos.X)) + CFG.SENTRY_YAW
+                pcall(function() drone:K2_SetActorRotation({ Pitch = 0, Yaw = yaw, Roll = 0 }, false) end)
+            end
+        end
         if s.attached and valid(drone) then
             -- over the right shoulder, in the player's own space
             pcall(function()
@@ -3693,6 +3766,12 @@ CAST.sentry = function(i, p, pc, pawn, pressed)
         s.pos = { X = s.pos.X + (want.X - s.pos.X) * k, Y = s.pos.Y + (want.Y - s.pos.Y) * k, Z = s.pos.Z + (want.Z - s.pos.Z) * k }
         pos = s.pos
         moveTo(drone, pos)
+        -- back from a mark: on the shoulder again once it's there
+        if s.flying and valid(drone) and dist(pos, want) < 120 then
+            s.onMesh = pcall(function() drone:K2_AttachToComponent(myPawn.Mesh, FName("None"), 1, 1, 1, false) end)
+            s.attached = s.onMesh or pcall(function() drone:K2_AttachToActor(myPawn, FName("None"), 1, 1, 1, false) end)
+            s.flying = false
+        end
         -- face where the player is looking
         if valid(drone) then
             local yaw = math.deg(math.atan(fy0, fx0)) + CFG.SENTRY_YAW
@@ -3720,8 +3799,9 @@ CAST.sentry = function(i, p, pc, pawn, pressed)
                 local tl = locOf(s.target)
                 if tl and dist(tl, pos) < CFG.SENTRY_RANGE * 1.15 then best = s.target end
             end
+            if markOn then best = markOn end
             if best then
-                s.zapAt = t + 0.5
+                s.zapAt = t + (rapid and (CFG.SENTRY_RAPID_INTERVAL or 0.12) or 0.5)
                 if best ~= s.target or not (s.arc and valid(s.arc)) then
                     if s.arc and valid(s.arc) then pcall(function() s.arc:StopBeam() end); pcall(function() s.arc:K2_DestroyActor() end) end
                     s.target = best
@@ -3735,7 +3815,7 @@ CAST.sentry = function(i, p, pc, pawn, pressed)
                     if not state.droneShotLogged then state.droneShotLogged = true; wlog("Sentry drone: zapping with the Zap-O-Matic beam (%s)", s.arc and "on" or "no beam") end
                 end
                 -- real damage: take a slice off their health; the last slice goes through the game's death path
-                sliceHurt(best, CFG.SENTRY_ZAP_SLICE or 0.12, myPawn)
+                sliceHurt(best, rapid and (CFG.SENTRY_RAPID_SLICE or 0.05) or (CFG.SENTRY_ZAP_SLICE or 0.12), myPawn)
                 s.markOn = best
                 -- a bolt you can see, Zap-O-Matic style: a blue streak (the Ion Detonator's trail,
                 -- catalog 145) flies from the drone to them on an invisible carrier
