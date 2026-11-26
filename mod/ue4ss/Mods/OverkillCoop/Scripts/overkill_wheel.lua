@@ -4229,37 +4229,32 @@ end
 OK.addTickJob("lbGate", 0.0, function() pcall(lbGateTick) end)
 
 -- The game's own buttons aren't in the engine's button list: they're in its "input schemes"
--- (one for Crypto, one for the saucer, one for Holobob), each a list of actions with the
--- buttons that trigger them. LB's actions there (the weapon wheel, next weapon) are moved to
--- a button that doesn't exist, so the game never sees LB at all and its wheel can't open.
--- They're put back when the mod's wheel (or the saucer wheel) is switched off. Only in
--- memory: nothing is saved, and restarting the game always brings the original buttons back.
-local NO_KEY = "None"
-local schemeGate = { moved = {}, logged = {}, at = 0 }   -- scheme key -> { {el, key2?}, ... }
-local function schemeKind(sc)
-    local n = OK.nameOf(sc):lower()
-    local okN, sn = pcall(function() return sc.m_strName:ToString() end)
-    if okN and sn then n = n .. " " .. sn:lower() end
-    if n:find("ufo") or n:find("saucer") then return "ufo" end
-    if n:find("ui") and not n:find("crypto") and not n:find("holo") then return "ui" end
-    return "foot"                                   -- Crypto and Holobob
-end
-local function refreshInputCaches()
-    pcall(function()
-        for _, c in ipairs(FindAllOf("BFGActorComponent_InputActions") or {}) do
-            if valid(c) then pcall(function() c:RefreshCache() end) end
-        end
-    end)
+-- (Crypto, Holobob, saucer, skating...), each a list of actions with the button patterns that
+-- trigger them. The weapon wheel is the action DA_InputAction_Ground_WeaponSelect on LB (found
+-- in IS_Focus_Crypto). Its LB pattern is made to need LB held for hours, so it never opens;
+-- nothing else on LB is touched (in the skating schemes LB is PK). The button itself is left
+-- as it is (changing it to no button crashed the game while a level loaded), and the game's
+-- caches aren't forced to rebuild: it picks the change up itself when it next loads its
+-- controls. Only in memory, put back when the mod's wheel is switched off.
+local WHEEL_ACTIONS = { "WeaponSelect" }
+local NEVER = 100000.0
+local schemeGate = { moved = {}, logged = {}, at = 0 }
+local function isWheelAction(m)
+    local n = ""
+    pcall(function() n = OK.shortName(m.m_pInputActionInfo) or "" end)
+    for _, w in ipairs(WHEEL_ACTIONS) do if n:find(w, 1, true) then return true, n end end
+    return false, n
 end
 local function schemeSet(sc, take)
     local k = OK.keyOf(sc)
     if take then
         if schemeGate.moved[k] then return 0 end
-        local moved, names = {}, {}
+        local moved, info = {}, {}
         pcall(function()
             sc.m_aInputActionMaps:ForEach(function(_, me)
                 local m = me:get()
-                local hit = false
+                local yes, n = isWheelAction(m)
+                if not yes then return end
                 pcall(function()
                     m.m_aInputPatterns:ForEach(function(_, pe)
                         pe:get().m_aInputPatternsElements:ForEach(function(_, ee)
@@ -4267,35 +4262,26 @@ local function schemeSet(sc, take)
                             local k1 = el.m_oKey.KeyName:ToString()
                             local k2 = el.m_oKeySecondary.KeyName:ToString()
                             if k1 == LB_KEY or k2 == LB_KEY then
-                                moved[#moved + 1] = { el = el, k1 = k1, k2 = k2 }
-                                if k1 == LB_KEY then el.m_oKey.KeyName = FName(NO_KEY) end
-                                if k2 == LB_KEY then el.m_oKeySecondary.KeyName = FName(NO_KEY) end
-                                hit = true
+                                local t0 = el.m_fMinTime
+                                moved[#moved + 1] = { el = el, t0 = t0 }
+                                info[#info + 1] = string.format("%s state %s min %.2f max %.2f", n, tostring(el.m_oState), t0 or -1, el.m_fMaxTime or -1)
+                                el.m_fMinTime = NEVER
                             end
                         end)
                     end)
                 end)
-                if hit then
-                    local nmA = "?"
-                    pcall(function() nmA = OK.shortName(m.m_pInputActionInfo) end)
-                    names[#names + 1] = nmA
-                end
             end)
         end)
         schemeGate.moved[k] = { sc = sc, list = moved }
-        if not schemeGate.logged[k] then
+        if #moved > 0 and not schemeGate.logged[k] then
             schemeGate.logged[k] = true
-            wlog("LB: %d button uses taken from the game's %s controls (%s)%s", #moved, schemeKind(sc), OK.shortName(sc),
-                #names > 0 and (": " .. table.concat(names, ", ")) or "")
+            wlog("LB: the game's weapon wheel switched off in %s (%s)", OK.shortName(sc), table.concat(info, "; "))
         end
         return #moved
     else
         local e = schemeGate.moved[k]
         if not e then return 0 end
-        for _, mv in ipairs(e.list) do
-            pcall(function() if mv.k1 == LB_KEY then mv.el.m_oKey.KeyName = FName(LB_KEY) end end)
-            pcall(function() if mv.k2 == LB_KEY then mv.el.m_oKeySecondary.KeyName = FName(LB_KEY) end end)
-        end
+        for _, mv in ipairs(e.list) do pcall(function() mv.el.m_fMinTime = mv.t0 end) end
         schemeGate.moved[k] = nil
         return #e.list
     end
@@ -4304,25 +4290,18 @@ local function schemeTick()
     if os.clock() < schemeGate.at then return end
     schemeGate.at = os.clock() + 1.0
     for _, pc in ipairs(controllers()) do if valid(pc) and kbDown(pc, LB_KEY) then return end end
-    local changed = 0
     pcall(function()
         for _, sc in ipairs(FindAllOf("BFGInputScheme") or {}) do
             if valid(sc) then
-                local kind = schemeKind(sc)
-                local want = CFG.LB_TAKE_FROM_GAME ~= false and CFG.MIND_WHEEL and
-                    ((kind == "foot") or (kind == "ufo" and CFG.SAUCER_WHEEL ~= false)) or false
-                changed = changed + schemeSet(sc, want)
+                schemeSet(sc, CFG.LB_TAKE_FROM_GAME ~= false and CFG.MIND_WHEEL and true or false)
             end
         end
     end)
-    -- schemes that went away (map change) are forgotten
     for k, e in pairs(schemeGate.moved) do if not valid(e.sc) then schemeGate.moved[k] = nil end end
-    if changed > 0 then refreshInputCaches() end
 end
 OK.addTickJob("lbSchemes", 0.25, function() pcall(schemeTick) end)
 state.lbSchemesGiveBack = function()
     for _, e in pairs(schemeGate.moved) do if valid(e.sc) then schemeSet(e.sc, false) end end
-    refreshInputCaches()
 end
 end)()
 
