@@ -201,7 +201,7 @@ local CFG = {
     P2_BRACKET_SHARED = false,        -- (off: it turned Player 2's cyan bracket gold)
     P2_ARCS_FOLLOW_GAME = true,       -- the arcs go on what the game's PK is aimed at for Player 2 (what RB grabs), when it has one
     CAM_WATCH_AUTO = false,           -- (test) once per session, 40 s after Player 2 joins: the DLL logs which game code reads Player 1's camera
-    KEEP_PRIMARY_P1 = true,           -- keep the game's primary player on Player 1 (it moved to Player 2 after P1's jetpack: both radars followed P2)
+    KEEP_PRIMARY_P1 = false,          -- keep the game's primary player on Player 1 (it moved to Player 2 after P1's jetpack: both radars followed P2)
     RADAR_OWN_CENTER = true,          -- (test) each radar is updated around its own player (P1's followed P2)
     RADAR_OWN_TURN = false,           -- (test, off) also turn each radar with its own player's camera
     TEST_RECORDER = true,             -- (test) remember the last 12 s of targeting; Guide button / Ctrl+F8 writes it to the log
@@ -9371,6 +9371,11 @@ OverkillCoop = {
                 parts[#parts + 1] = string.format("P%d PKaim=%s hover=%s%s shared=%s", i, nm(a), nm(h), holding and " HOLDING" or "", nm(okM and ma or nil))
             end
         end
+        pcall(function()
+            local gs = FindFirstOf("GameStateBase")
+            local pp = gs.m_pLastKnownPrimaryPlayerPawn
+            parts[#parts + 1] = "| primary=" .. ((valid(pp) and keyOf(pp) == keyOf(getPawn(player1Controller()))) and "P1" or (valid(pp) and "P2" or "-"))
+        end)
         if valid(state.p2) then
             parts[#parts + 1] = string.format("| P2 arcs=%s bracket=%s (game %s x%d, mod %s)", nm(state.p2PKLock), nm(state.p2BracketOn), nm(state.p2GameGun), state.p2GameGunN or 0, nm(state.p2ModLock))
         end
