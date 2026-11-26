@@ -141,13 +141,14 @@ local CFG = {
     P2_LOCK_REAL = false,             -- (test: off) the mod no longer writes Player 2's lock into the game
     P2_GUN_FOLLOW_GAME = true,
     P2_MOD_GUN_LOCK = false,          -- (off) the mod's own gun lock for Player 2 when the game has none (it made the ghost targets)
+    SPLIT_VEHICLE_LOD_MULT = 2.5,     -- two players: cars keep their drivers and full detail this many times further from Player 1
     SPLIT_LOD_PROFILE = true,         -- two players: keep detail further out (each half-screen view is smaller, so the game drops detail sooner)
     SPLIT_LOD_COMMANDS = { "r.StaticMeshLODDistanceScale 0.6", "r.SkeletalMeshLODBias -1", "r.ViewDistanceScale 1.6", "foliage.LODDistanceScale 1.6" },
     SPLIT_LOD_RESET = { "r.StaticMeshLODDistanceScale 1", "r.SkeletalMeshLODBias 0", "r.ViewDistanceScale 1", "foliage.LODDistanceScale 1" },        -- Player 2's cyan bracket uses the game's own lock when it has one
     P2_PK_AIM_WIDEN = 2.0,
     P2_PK_GAP_HOLD = 0.6,             -- Player 2's arcs bridge the game's short PK-aim drop-outs (seconds)            -- Player 2's PK reach to the sides (the game's auto-target area x this)
     P2_TARGET_HEALTH = true,          -- Player 2 sees the health bar of what its gun is locked on to
-    P2_ZAP_CHAIN = true,
+    P2_ZAP_CHAIN = false,             -- (test: off) the mod's own zap chain for Player 2; does the game chain by itself now?
     P2_ZAP_BRACKET = true,
     P2_ZAP_ARCS = true,               -- draw the arcs of Player 2's zap chain with the game's beam effect            -- Player 2's cyan Zap-O-Matic bracket placed from Player 2's own view              -- Player 2's Zap-O-Matic arcs to the people next to its target
     P2_ZAP_CHAIN_MAX = 3,             -- targets in Player 2's chain (main one included)
@@ -5460,7 +5461,9 @@ do
             local g = nil
             pcall(function()
                 local l = arrayToList(w.m_apCurrentLockedTargets)
-                for _, t in ipairs(l) do if valid(t) then g = t break end end
+                local n = 0
+                for _, t in ipairs(l) do if valid(t) then n = n + 1; g = g or t end end
+                state.p2GameGunN = n
             end)
             if g and state.notTargetable(g) then g = nil end
             state.p2GameGun = g
@@ -9296,7 +9299,7 @@ OverkillCoop = {
             end
         end
         if valid(state.p2) then
-            parts[#parts + 1] = string.format("| P2 arcs=%s bracket=%s (game %s, mod %s)", nm(state.p2PKLock), nm(state.p2BracketOn), nm(state.p2GameGun), nm(state.p2ModLock))
+            parts[#parts + 1] = string.format("| P2 arcs=%s bracket=%s (game %s x%d, mod %s)", nm(state.p2PKLock), nm(state.p2BracketOn), nm(state.p2GameGun), state.p2GameGunN or 0, nm(state.p2ModLock))
         end
         local line = table.concat(parts, "  ")
         local now = os.clock()
@@ -9420,5 +9423,56 @@ end)()
     addTickJob("splitLod", 2.0, function()
         if state.lodForced then return end   -- Ctrl+F3's forced LOD wins
         set(CFG.SPLIT_LOD_PROFILE and valid(state.p2) or false)
+    end)
+end)()
+
+-- Two players: cars swap to empty low-detail shells (no driver) by distance from Player 1
+-- only; push those distances out so Player 2's area keeps real traffic
+;(function()
+    local done = {}
+    onWorldChange(function() done = {} end)
+    local function scale(v, m)
+        local okC, cfgS = pcall(function() return v.Config end)
+        if not (okC and cfgS) then return false end
+        local ok = true
+        for _, f in ipairs({ "m_fLODStart", "m_fLODEnd" }) do
+            local okR, x = pcall(function() return cfgS[f] end)
+            if okR and type(x) == "number" then
+                local okW = pcall(function() cfgS[f] = x * m end)
+                ok = ok and okW
+            else
+                ok = false
+            end
+        end
+        return ok
+    end
+    state.onP2Leave(function()
+        for _, e in pairs(done) do if valid(e.v) then scale(e.v, 1 / e.m) end end
+        done = {}
+    end)
+    addTickJob("splitVehicleLod", 3.0, function()
+        local m = CFG.SPLIT_VEHICLE_LOD_MULT or 1
+        if not (valid(state.p2) and m > 1) then return end
+        local list = {}
+        for _, cn in ipairs({ "BP_BasicVehicle_C", "BP_BasicVehicle_Police_C", "BFGBasicVehicle" }) do
+            for _, v in ipairs(FindAllOf(cn) or {}) do list[#list + 1] = v end
+        end
+        local n = 0
+        for _, v in ipairs(list) do
+            if valid(v) then
+                local k = keyOf(v)
+                if k and not done[k] then
+                    if scale(v, m) then done[k] = { v = v, m = m }; n = n + 1 end
+                end
+            end
+        end
+        if n > 0 and not state.vehLodLogged then
+            state.vehLodLogged = true
+            local v1 = nil
+            for _, e in pairs(done) do v1 = e.v break end
+            local okA, a = pcall(function() return v1.Config.m_fLODStart end)
+            local okB, b = pcall(function() return v1.Config.m_fLODEnd end)
+            log("Split-screen cars: %d cars keep detail further out (first: LOD %s .. %s)", n, okA and tostring(a) or "?", okB and tostring(b) or "?")
+        end
     end)
 end)()

@@ -745,6 +745,8 @@ local function pushPull(pk, target, dir, justPressed, dt, camFwd)
                 end
                 if State.minDSized then minD = math.min(minD, State.minDSized) end
             end
+            -- a little past Crypto, toward the screen (the hold point sits above Crypto's shoulder)
+            if P.PastCrypto then minD = P.PastCrypto end
             local nd = clamp(d + step, minD, P.MaxDistance)
             if nd ~= d then trySet(holder, distName, nd); dbg(string.format("Distance %.0f", nd)) end
             if not P.AlsoNudge then return nd end
