@@ -7686,6 +7686,32 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
             end
         end)
         local ok = pcall(function() pw:SetActorScale3D({ X = f, Y = f, Z = f }) end)
+        -- the game's own camera rig (a camera handle, not a spring arm): its offset goes with the
+        -- size (giants: camera up and back out with them), and when tiny the camera isn't pulled
+        -- into Crypto by walls and bumps
+        pcall(function()
+            local ch = subObj(pw, "m_pCameraHandle")
+            if not ch then return end
+            state.camBase = state.camBase or {}
+            local ck = keyOf(ch)
+            if not state.camBase[ck] then
+                local so = ch.m_vSocketOffset
+                state.camBase[ck] = { probe = ch.m_fProbeSize, test = ch.m_bDoCollisionTest,
+                                      so = { X = so.X, Y = so.Y, Z = so.Z }, lock = ch.m_fLockOnArmLengthOverride }
+            end
+            local b0 = state.camBase[ck]
+            local m = math.min(f, CFG.SIZE_CAMERA_MAX or 8)
+            ch.m_fProbeSize = (b0.probe or 12) * math.min(1, math.max(0.1, f))
+            ch.m_bDoCollisionTest = (f >= 0.5) and (b0.test ~= false) or false
+            if f > 1 then
+                -- further back: the socket offset pulls the camera out behind and above the giant
+                ch.m_vSocketOffset = { X = (b0.so.X or 0) * m - 250 * (m - 1), Y = (b0.so.Y or 0) * m, Z = (b0.so.Z or 0) * m + 60 * (m - 1) }
+            elseif f < 1 then
+                ch.m_vSocketOffset = { X = b0.so.X or 0, Y = (b0.so.Y or 0) * math.max(0.3, f), Z = b0.so.Z or 0 }
+            else
+                ch.m_vSocketOffset = b0.so
+            end
+        end)
         -- tiny: the camera's collision probe shrinks too (it pulled the camera into Crypto's head)
         pcall(function()
             for _, arm in ipairs(arrayToList(pw:K2_GetComponentsByClass(StaticFindObject("/Script/Engine.SpringArmComponent")))) do
@@ -8002,8 +8028,14 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
             options = { "Off", "Players' shots", "Everyone's shots" },
             get = function() return state.trWreck or "Off" end,
             set = function(v) state.trWreck = v; log("Trainer: buildings wreckable on foot: %s", v) end }
+        state.trainerExtras[#state.trainerExtras + 1] = { key = "x_ff", page = 4,
+            label = "TEST  Enemies' friendly fire (their shots hurt each other)",
+            options = { "Off", "On" },
+            get = function() return state.trFF or "Off" end,
+            set = function(v) state.trFF = v; log("Trainer: enemy friendly fire %s", v) end }
         addTickJob("footWreck", 0.1, function()
-            if not state.trWreck or state.trWreck == "Off" then return end
+            local wreckOn = state.trWreck and state.trWreck ~= "Off"
+            if not wreckOn and state.trFF ~= "On" then return end
             local p1, p2 = getPawn(player1Controller()), valid(state.p2) and getPawn(state.p2) or nil
             local seenNow = {}
             pcall(function()
@@ -8024,7 +8056,7 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
                             if not e then
                                 local okI, inst = pcall(function() return v:GetInstigator() end)
                                 local mine = okI and valid(inst) and ((valid(p1) and keyOf(inst) == keyOf(p1)) or (p2 and keyOf(inst) == keyOf(p2)))
-                                e = { n = shortName(v), mine = mine, by = mine and inst or p1 }
+                                e = { n = shortName(v), mine = mine, by = mine and inst or p1, shooter = okI and inst or nil }
                                 live[k] = e
                             end
                             -- a jump of more than 30 m in a tenth of a second: put back in the pool
@@ -8066,7 +8098,28 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
                     if e.at and e.prev then
                         e.at = { X = e.at.X + (e.at.X - e.prev.X), Y = e.at.Y + (e.at.Y - e.prev.Y), Z = e.at.Z + (e.at.Z - e.prev.Z) }
                     end
-                    if e.at and (e.mine or state.trWreck == "Everyone's shots") then
+                    -- friendly fire: an NPC's shot that ended at another NPC hurts them
+                    if state.trFF == "On" and e.at and not e.mine then
+                        pcall(function()
+                            local arr = {}
+                            getStatics():GetAllActorsOfClass(getWorld(), StaticFindObject("/Script/Engine.Character"), arr)
+                            for _, a in ipairs(arr) do
+                                local c = a
+                                if type(a) == "userdata" and not valid(a) then pcall(function() c = a:get() end) end
+                                if valid(c) and not state.notTargetable(c) and not (valid(e.shooter) and keyOf(c) == keyOf(e.shooter)) then
+                                    local okC, cl = pcall(function() return c:K2_GetActorLocation() end)
+                                    if okC and cl and math.abs(cl.X - e.at.X) + math.abs(cl.Y - e.at.Y) + math.abs(cl.Z - e.at.Z) < 260 then
+                                        pcall(gameDamage, c, 2.0 * powerOf(e.n), valid(e.shooter) and e.shooter or c)
+                                        if (state.ffLogs or 0) < 6 then
+                                            state.ffLogs = (state.ffLogs or 0) + 1
+                                            log("Friendly fire: %s hit %s", e.n, shortName(c))
+                                        end
+                                    end
+                                end
+                            end
+                        end)
+                    end
+                    if wreckOn and e.at and (e.mine or state.trWreck == "Everyone's shots") then
                         for _, b in ipairs(buildingList()) do
                             if valid(b) then
                                 local okB, o, ex = pcall(function()
@@ -10196,12 +10249,7 @@ end)()
             pcall(function() w.m_pCachedSecondAlternateProjectileClass = cls end)
             pcall(function() w.m_pTrifusionChambers_ExtraBulletClass = cls end)   -- the Disintegrator's 2 extra shots
             -- the upgraded extra shots are made from the gun's class paths: point those at it too
-            local p = knownPath[want] or pathOf(cls)
-            if p then
-                for _, f in ipairs({ "m_ProjectileClass", "m_AlternateProjectileClass", "m_SecondAlternateProjectileClass" }) do
-                    pcall(function() w[f].AssetPathName = FName(p) end)
-                end
-            end
+            -- (the gun's own class paths are left alone: changing them stopped it being equipped)
         elseif original[wk] then
             local o = original[wk]
             for f, v in pairs(o.soft or {}) do pcall(function() w[f].AssetPathName = FName(v) end) end
@@ -10238,7 +10286,7 @@ end)()
     -- the players' guns (fixed rows), plus one row per NPC gun kind found on this map
     projRow("DisintegratorRayBP_C", "Disintegrator Ray shoots")
     add({ key = "act_projscan", page = PAGE_PROJ, label = "Look again for projectiles and NPC guns (after loading a new area)",
-          options = { "(choose)", "Scan now" }, show = function() return true end, get = function() return "(choose)" end,
+          options = { "Scan now" }, show = function() return true end, get = function() return "Scan now" end,
           set = function(v)
               if v ~= "Scan now" then return end
               refreshProjectiles()
@@ -10477,7 +10525,7 @@ end)()
               log("Upgrades: all -> %s (%d chains)", v, #chains)
           end })
     add({ key = "act_upgscan", page = PAGE_UPG, label = "Look again for upgrades (they list once the game has loaded them)",
-          options = { "(choose)", "Scan now" }, show = function() return true end, get = function() return "(choose)" end,
+          options = { "Scan now" }, show = function() return true end, get = function() return "Scan now" end,
           set = function(v) if v == "Scan now" then log("Upgrades: %d new (reopen the trainer)", scanUpgrades()) end end })
     local upgScanned = false
     onWorldChange(function() upgScanned = false end)

@@ -1,0 +1,25 @@
+# Third Eye Decalcified Co-op: projectiles and beams seen in the game (the trainer's Shots page)
+beam /Game/Blueprints/Weapon/UFO/BP_DeathRayBeam.BP_DeathRayBeam_C
+proj /Game/Blueprints/Projectiles/BP_Grenade.BP_Grenade_C
+proj /Game/Blueprints/Projectiles/BP_Grenade_PowerSuit.BP_Grenade_PowerSuit_C
+proj /Game/Blueprints/Projectiles/BP_ProjectileAnalProbe.BP_ProjectileAnalProbe_C
+proj /Game/Blueprints/Projectiles/BP_ProjectileBullet_ArmquistMachineGun.BP_ProjectileBullet_ArmquistMachineGun_C
+proj /Game/Blueprints/Projectiles/BP_ProjectileBullet_GunTurret.BP_ProjectileBullet_GunTurret_C
+proj /Game/Blueprints/Projectiles/BP_ProjectileBullet_MajesticAlienTechPistol.BP_ProjectileBullet_MajesticAlienTechPistol_C
+proj /Game/Blueprints/Projectiles/BP_ProjectileBullet_MajesticAlienTechRifle.BP_ProjectileBullet_MajesticAlienTechRifle_C
+proj /Game/Blueprints/Projectiles/BP_ProjectileBullet_Pistol.BP_ProjectileBullet_Pistol_C
+proj /Game/Blueprints/Projectiles/BP_ProjectileBullet_PowerSuit.BP_ProjectileBullet_PowerSuit_C
+proj /Game/Blueprints/Projectiles/BP_ProjectileBullet_Rifle.BP_ProjectileBullet_Rifle_C
+proj /Game/Blueprints/Projectiles/BP_ProjectileBullet_Shotgun.BP_ProjectileBullet_Shotgun_C
+proj /Game/Blueprints/Projectiles/BP_ProjectileBullet_Tank.BP_ProjectileBullet_Tank_C
+proj /Game/Blueprints/Projectiles/BP_ProjectileDisintegrationRay.BP_ProjectileDisintegrationRay_C
+proj /Game/Blueprints/Projectiles/BP_ProjectileDisintegrationRay_Smaller.BP_ProjectileDisintegrationRay_Smaller_C
+proj /Game/Blueprints/Projectiles/BP_ProjectileIonDetonator.BP_ProjectileIonDetonator_C
+proj /Game/Blueprints/Projectiles/BP_ProjectileMindLinkPulseField.BP_ProjectileMindLinkPulseField_C
+proj /Game/Blueprints/Projectiles/BP_ProjectilePsiGrenade.BP_ProjectilePsiGrenade_C
+proj /Game/Blueprints/Projectiles/BP_ProjectileQuantumDecontructor.BP_ProjectileQuantumDecontructor_C
+proj /Game/Blueprints/Projectiles/BP_ProjectileSonicBoom2.BP_ProjectileSonicBoom2_C
+proj /Game/Blueprints/Projectiles/BP_Projectile_BossAOE.BP_Projectile_BossAOE_C
+proj /Game/Blueprints/Projectiles/BP_Projectile_SAM.BP_Projectile_SAM_C
+proj /Game/Blueprints/Projectiles/BP_Projectile_TeslaCoil.BP_Projectile_TeslaCoil_C
+beam /Game/Blueprints/Weapon/Crypto/BP_Zap-O-MaticBeam.BP_Zap-O-MaticBeam_C
