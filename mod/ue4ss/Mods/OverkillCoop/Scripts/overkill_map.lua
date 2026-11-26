@@ -110,12 +110,13 @@ local function guessCalib(pins)
         minY, maxY = math.min(minY, p.y), math.max(maxY, p.y)
     end
     if minX == math.huge or maxX - minX < 1000 then return { 0, -0.01, IMG_W / 2, IMG_H / 2 } end
-    local sx = (IMG_H * 0.8) / (maxX - minX)        -- X runs up the picture
-    local sy = (IMG_W * 0.8) / (maxY - minY)        -- Y runs across
-    local s = math.min(sx, sy)
-    -- a = s * (-i): px = s*Y + br, py = -s*X + bi
+    -- from Area 42, lined up in game: the pictures have world X running right and Y down,
+    -- at about 0.0174 pixels per cm (the same debug camera took them all). Centred on what
+    -- was found, at that scale, unless that wouldn't fit.
+    local s = CFG.MAP_GUESS_SCALE or 0.0174
+    s = math.min(s, (IMG_W * 0.9) / (maxX - minX), (IMG_H * 0.9) / (maxY - minY))
     local cx, cy = (minX + maxX) / 2, (minY + maxY) / 2
-    return { 0, -s, IMG_W / 2 - s * cy, IMG_H / 2 + s * cx }
+    return { s, 0, IMG_W / 2 - s * cx, IMG_H / 2 - s * cy }
 end
 local function solve(key)
     local pts = points[key]

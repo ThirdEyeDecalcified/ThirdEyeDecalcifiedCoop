@@ -1,1 +1,2 @@
 # map  a(real) a(imag) b(real) b(imag): picture pixel = a * (X + iY) + b
+Area42 0.0173638504 -0.000643344599 759.786792 319.902185
