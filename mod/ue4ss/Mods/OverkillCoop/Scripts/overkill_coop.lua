@@ -7442,11 +7442,21 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
         end
         log("Trainer: NPCs ignore both players: %s", on and "on" or "off")
     end
-    addTickJob("trainerIgnore", 2.0, function()
-        if state.trIgnore ~= "On" then return end
-        for _, pc in ipairs({ player1Controller(), state.p2 }) do
+    -- checked often (a new body - map load, Player 2 joining - is hidden at once), fully
+    -- re-applied every 2 s
+    local ignoreDone, ignoreAll = {}, 0
+    addTickJob("trainerIgnore", 0.1, function()
+        if state.trIgnore ~= "On" then ignoreDone = {} return end
+        local full = os.clock() - ignoreAll > 2.0
+        if full then ignoreAll = os.clock() end
+        local pcs = { player1Controller(), state.p2 }
+        for slot = 3, 4 do local xp = state.extraPlayers and state.extraPlayers[slot]; if valid(xp) then pcs[#pcs + 1] = xp end end
+        for _, pc in ipairs(pcs) do
             local pw = valid(pc) and getPawn(pc) or nil
-            if valid(pw) then setInvisible(pw, true) end
+            if valid(pw) and (full or not ignoreDone[keyOf(pw)]) then
+                setInvisible(pw, true)
+                ignoreDone[keyOf(pw)] = true
+            end
         end
     end)
     -- No "turn around" / out-of-bounds death: the map's OOB trigger zones stop working.
@@ -9231,6 +9241,8 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
             if n > 0 then log("Saved settings: %d loaded for %s", n, mapName()) end
         end
         onWorldChange(function()
+            -- "NPCs ignore you" can't wait for the rest: on straight away
+            if state.trSaveOn and settings[slot("ignore")] == "On" then state.trIgnore = "On" end
             later(CFG.TRAINER_RESTORE_DELAY or 8, "savedSettings", restore)
         end)
     end
@@ -9869,8 +9881,59 @@ end)()
     -- ---------- projectiles ----------
     local projList, projByName = { "Game default" }, {}
     local original = {}     -- weapon key -> { a, b, c } original cached classes
+    -- every projectile / beam ever scanned is kept in projectiles.txt (shipped with the mod),
+    -- by its path, so they're all on the list from the start; each is only loaded when picked
+    local KNOWN_FILE = "ue4ss/Mods/OverkillCoop/projectiles.txt"
+    local knownPath = {}   -- short name -> full path ("/Game/.../X.X_C")
+    local knownKind = {}   -- short name -> "proj" / "beam"
+    local function pathOf(c)
+        local full = nameOf(c) or ""
+        return full:match("%s(/%S+)$") or full:match("^(/%S+)$")
+    end
+    local function readKnown()
+        local f = io.open(KNOWN_FILE, "r")
+        if not f then return end
+        for line in f:lines() do
+            local kind, path = line:match("^(%a+)%s+(/%S+)")
+            if kind and path then
+                local n = path:match("%.([%w_%-]+)$") or path
+                knownPath[n], knownKind[n] = path, kind
+            end
+        end
+        f:close()
+    end
+    local function writeKnown()
+        local f = io.open(KNOWN_FILE, "w")
+        if not f then return end
+        f:write("# Third Eye Decalcified Co-op: projectiles and beams seen in the game (the trainer's Shots page)\n")
+        local names = {}
+        for n in pairs(knownPath) do names[#names + 1] = n end
+        table.sort(names)
+        for _, n in ipairs(names) do f:write(string.format("%s %s\n", knownKind[n] or "proj", knownPath[n])) end
+        f:close()
+    end
+    readKnown()
+    -- beams the Zap-O-Matic can use even if the game hasn't loaded them yet
+    for _, p in ipairs({ "/Game/Blueprints/Weapon/UFO/BP_DeathRayBeam.BP_DeathRayBeam_C",
+                         "/Game/Blueprints/Weapon/Crypto/BP_Zap-O-MaticBeam.BP_Zap-O-MaticBeam_C" }) do
+        local n = p:match("%.([%w_%-]+)$")
+        if not knownPath[n] then knownPath[n], knownKind[n] = p, "beam" end
+    end
+    -- the class for a name: loaded already, or loaded now from its path
+    local function classFor(n, map)
+        local c = map[n]
+        if valid(c) then return c end
+        local p = knownPath[n]
+        if not p then return nil end
+        c = StaticFindObject(p)
+        if not valid(c) and state.loadClass then c = state.loadClass(p) end
+        if valid(c) then map[n] = c end
+        return valid(c) and c or nil
+    end
+    state.projClassFor = classFor
     local function refreshProjectiles()
         local seen = {}
+        for n, k in pairs(knownKind) do if k == "proj" then seen[n] = true end end
         for _, c in ipairs(FindAllOf("BlueprintGeneratedClass") or {}) do
             if valid(c) then
                 local n = short(nameOf(c))
@@ -9887,6 +9950,7 @@ end)()
                 if n ~= "" and n ~= "None" and not n:find("^Default__") and not seen[n] then seen[n] = true; projByName[n] = c end
             end
         end
+        local changed = false
         pcall(function()
             local base = StaticFindObject("/Script/BFGCore.BFGWeapon_BaseProjectile")
             if not (inGame() and base and valid(base)) then return end
@@ -9915,10 +9979,17 @@ end)()
                 if valid(v) then pcall(function() addCls(v:GetClass()) end) end
             end
         end)
+        for n, c in pairs(projByName) do
+            if valid(c) and not knownPath[n] then
+                local p = pathOf(c)
+                if p then knownPath[n], knownKind[n] = p, "proj"; changed = true end
+            end
+        end
+        if changed then writeKnown() end
         local names = {}
         for n in pairs(seen) do names[#names + 1] = n end
         table.sort(names)
-        log("Projectiles: %d projectile types loaded right now", #names)
+        log("Projectiles: %d projectile types on the list (%s new)", #names, changed and "some" or "none")
         for i = #projList, 2, -1 do projList[i] = nil end
         for _, n in ipairs(names) do projList[#projList + 1] = n end
     end
@@ -9928,7 +9999,11 @@ end)()
         return okC and valid(c) and short(nameOf(c)) or nil
     end
     local PLAYER_GUNS = { "DisintegratorRay", "IonDetonator", "AnalProbe" }
-    local function isPlayerGun(k) for _, g in ipairs(PLAYER_GUNS) do if k:find(g) then return true end end return false end
+    local function isPlayerGun(k)
+        if k:find("UFO_") then return true end   -- the saucer's own weapons (on foot too)
+        for _, g in ipairs(PLAYER_GUNS) do if k:find(g) then return true end end
+        return false
+    end
     local choice = {}       -- kind -> projectile name
     local npcKinds = {}     -- list of NPC weapon kinds seen
     local function projWeapons()
@@ -9952,20 +10027,32 @@ end)()
         local want = choice[k]
         local wk = keyOf(w)
         if want and want ~= "Game default" then
-            local cls = projByName[want]
+            local cls = classFor(want, projByName)
             if not valid(cls) then return end
             if not original[wk] then
                 local o = {}
                 pcall(function() o[1] = w.m_pCachedProjectileClass end)
                 pcall(function() o[2] = w.m_pCachedAlternateProjectileClass end)
                 pcall(function() o[3] = w.m_pCachedSecondAlternateProjectileClass end)
+                o.soft = {}
+                for _, f in ipairs({ "m_ProjectileClass", "m_AlternateProjectileClass", "m_SecondAlternateProjectileClass" }) do
+                    pcall(function() o.soft[f] = w[f].AssetPathName:ToString() end)
+                end
                 original[wk] = o
             end
             pcall(function() w.m_pCachedProjectileClass = cls end)
             pcall(function() w.m_pCachedAlternateProjectileClass = cls end)
             pcall(function() w.m_pCachedSecondAlternateProjectileClass = cls end)
+            -- the upgraded extra shots are made from the gun's class paths: point those at it too
+            local p = knownPath[want] or pathOf(cls)
+            if p then
+                for _, f in ipairs({ "m_ProjectileClass", "m_AlternateProjectileClass", "m_SecondAlternateProjectileClass" }) do
+                    pcall(function() w[f].AssetPathName = FName(p) end)
+                end
+            end
         elseif original[wk] then
             local o = original[wk]
+            for f, v in pairs(o.soft or {}) do pcall(function() w[f].AssetPathName = FName(v) end) end
             if o[1] then pcall(function() w.m_pCachedProjectileClass = o[1] end) end
             if o[2] then pcall(function() w.m_pCachedAlternateProjectileClass = o[2] end) end
             if o[3] then pcall(function() w.m_pCachedSecondAlternateProjectileClass = o[3] end) end
@@ -9990,8 +10077,6 @@ end)()
     end
     -- the players' guns (fixed rows), plus one row per NPC gun kind found on this map
     projRow("DisintegratorRayBP_C", "Disintegrator Ray shoots")
-    projRow("BP_Weapon_IonDetonator_C", "Ion Detonator shoots")
-    projRow("BP_Weapon_AnalProbe_C", "Anal Probe shoots")
     add({ key = "act_projscan", page = PAGE_PROJ, label = "Look again for projectiles and NPC guns (after loading a new area)",
           options = { "(choose)", "Scan now" }, show = function() return true end, get = function() return "(choose)" end,
           set = function(v)
@@ -10037,6 +10122,12 @@ end)()
                 end
             end
         end
+        local changed = false
+        for n, c in pairs(beamByName) do
+            if valid(c) and not knownPath[n] then local p = pathOf(c); if p then knownPath[n], knownKind[n] = p, "beam"; changed = true end end
+        end
+        for n, k in pairs(knownKind) do if k == "beam" then seen[n] = true end end
+        if changed then writeKnown() end
         local names = {}
         for n in pairs(seen) do names[#names + 1] = n end
         table.sort(names)
@@ -10069,8 +10160,8 @@ end)()
             beamOrig[wk], beamMade[wk] = nil, nil
             return
         end
-        local cls = beamByName[beamChoice]
-        if not valid(cls) then return end
+        local cls = classFor(beamChoice, beamByName)
+        if not valid(cls) then log("Zap beam: couldn't load %s", beamChoice) return end
         if beamMade[wk] and valid(beamMade[wk]) and beamMade[wk]:GetClass() == cls then return end
         if not beamOrig[wk] then pcall(function() beamOrig[wk] = w.m_pBeam end) end
         if beamMade[wk] and valid(beamMade[wk]) then pcall(function() beamMade[wk]:K2_DestroyActor() end) end
@@ -10141,7 +10232,7 @@ end)()
         return o
     end
     local function applyChain(ch, v)
-        if v == "Game (save)" then
+        if v:find("^Game %(save%)") then
             for _, it in ipairs(ch.items) do setUpgrade(it.tag, "game") end
             ch.level = nil
             return
@@ -10153,10 +10244,18 @@ end)()
     local function addChainRow(ch)
         ch.options = chainOptions(ch)
         add({ key = "upg_" .. ch.key:gsub("[^%w]", "_"), page = PAGE_UPG, label = ch.label, options = ch.options,
-              show = function() return true end,
+              show = function()
+                  -- what you own (asked only when the trainer opens, and only while the game decides)
+                  if not ch.level then
+                      local have = 0
+                      for _, it in ipairs(ch.items) do if owned(it.tag) then have = have + 1 end end
+                      ch.options[1] = string.format("Game (save)  %s  you have %d of %d", boxes(have, #ch.items), have, #ch.items)
+                  end
+                  return true
+              end,
               get = function()
                   if ch.level then return ch.options[ch.level + 2] end
-                  return "Game (save)"
+                  return ch.options[1]
               end,
               set = function(v) applyChain(ch, v); log("Upgrades: %s -> %s", ch.label, v) end })
     end
