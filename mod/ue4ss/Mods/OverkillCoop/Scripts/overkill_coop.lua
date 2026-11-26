@@ -147,7 +147,9 @@ local CFG = {
     SPLIT_LOD_COMMANDS = { "r.StaticMeshLODDistanceScale 0.6", "r.SkeletalMeshLODBias -1", "r.ViewDistanceScale 1.6", "foliage.LODDistanceScale 1.6" },
     SPLIT_LOD_RESET = { "r.StaticMeshLODDistanceScale 1", "r.SkeletalMeshLODBias 0", "r.ViewDistanceScale 1", "foliage.LODDistanceScale 1" },        -- Player 2's cyan bracket uses the game's own lock when it has one
     P2_PK_AIM_WIDEN = 2.0,
-    P2_PK_GAP_HOLD = 0.6,             -- Player 2's arcs bridge the game's short PK-aim drop-outs (seconds)            -- Player 2's PK reach to the sides (the game's auto-target area x this)
+    P2_PK_GAP_HOLD = 0.6,
+    PK_CROWD_PER_PLAYER = true,       -- (test, from Clone Carnage) the traffic/crowd system is told whose PK is holding something (it only knew Player 1's)
+    P2_ZAP_NO_PROPS = true,           -- (test) Player 2's Zap-O-Matic doesn't take the PK target when that's a prop (it shot at far PK objects)             -- Player 2's arcs bridge the game's short PK-aim drop-outs (seconds)            -- Player 2's PK reach to the sides (the game's auto-target area x this)
     P2_TARGET_HEALTH = true,          -- Player 2 sees the health bar of what its gun is locked on to
     P2_ZAP_CHAIN = true,              -- the mod's zap chain for Player 2 (tested: the game alone doesn't chain for Player 2)
     P2_ZAP_BRACKET = true,
@@ -9296,7 +9298,9 @@ OverkillCoop = {
                 local a, h, holding = pkOf(pc)
                 local f = subObj(getPawn(pc), "m_pFocusComponent")
                 local okF, ft = pcall(function() return f and f.m_pCurrentAutoLockTarget end)
-                parts[#parts + 1] = string.format("P%d PKaim=%s hover=%s%s gun=%s", i, nm(a), nm(h), holding and " HOLDING" or "", nm(okF and ft or nil))
+                local mc = subObj(getPawn(pc), "m_pMentalAbilityComponent")
+                local okM, ma = pcall(function() return mc and mc.m_pCurrentAimTarget end)
+                parts[#parts + 1] = string.format("P%d PKaim=%s hover=%s%s shared=%s", i, nm(a), nm(h), holding and " HOLDING" or "", nm(okM and ma or nil))
             end
         end
         if valid(state.p2) then
@@ -9474,6 +9478,69 @@ end)()
             local okA, a = pcall(function() return v1.Config.m_fLODStart end)
             local okB, b = pcall(function() return v1.Config.m_fLODEnd end)
             log("Split-screen cars: %d cars keep detail further out (first: LOD %s .. %s)", n, okA and tostring(a) or "?", okB and tostring(b) or "?")
+        end
+    end)
+end)()
+
+-- Tests from the other games' data
+;(function()
+    local function pkAbility(pawn)
+        local mental = subObj(pawn, "m_pMentalAbilityComponent")
+        if not mental then return nil end
+        for _, ab in ipairs(state.p2Abilities(mental)) do
+            if valid(ab) and nameOf(ab):find("kinesis") then return ab end
+        end
+    end
+    local function holding(ab)
+        local ok, t = pcall(function() return ab and ab.m_pActiveTarget end)
+        return ok and valid(t)
+    end
+    -- Clone Carnage's traffic/crowd system keeps every player's PK; this game's keeps one (Player
+    -- 1's), so a person or car lifted by Player 2 is still treated as walking/driving its path
+    -- (it fights the lift: the "pushed away, on and off" pickups). Point it at whoever is holding.
+    local cachedFor = nil
+    addTickJob("pkCrowdPerPlayer", 0.05, function()
+        if not (CFG.PK_CROWD_PER_PLAYER and valid(state.p2)) then return end
+        local gs = FindFirstOf("GameStateBase")
+        local okT, tm = pcall(function() return gs:GetTrafficCrowdManager() end)
+        if not (okT and valid(tm)) then return end
+        local a1, a2 = pkAbility(getPawn(player1Controller())), pkAbility(getPawn(state.p2))
+        local want = (holding(a2) and not holding(a1)) and a2 or a1
+        if want and keyOf(want) ~= cachedFor then
+            local ok = pcall(function() tm.m_pCachedPKComponent = want end)
+            cachedFor = keyOf(want)
+            if (state.pkCrowdLogs or 0) < 6 then
+                state.pkCrowdLogs = (state.pkCrowdLogs or 0) + 1
+                log("Crowd system PK -> %s (%s)", want == a2 and "Player 2" or "Player 1", ok and "ok" or "failed")
+            end
+        end
+    end)
+    state.onP2Leave(function()
+        pcall(function()
+            local tm = FindFirstOf("GameStateBase"):GetTrafficCrowdManager()
+            local a1 = pkAbility(getPawn(player1Controller()))
+            if a1 then tm.m_pCachedPKComponent = a1 end
+        end)
+        cachedFor = nil
+    end)
+
+    -- Player 2's gun and mind powers share one aim target; when that is a prop (what PK is
+    -- aimed at), the Zap-O-Matic went for it. Clear it for the zap while it's not a person.
+    local charCls = nil
+    addTickJob("p2ZapNoProps", 0.0, function()
+        if not (CFG.P2_ZAP_NO_PROPS and valid(state.p2)) then return end
+        local pawn = getPawn(state.p2)
+        local eq = subObj(pawn, "m_pEquipmentManagerComponent")
+        local okW, w = pcall(function() return eq:GetCurrentWeapon() end)
+        if not (okW and valid(w) and nameOf(w):find("Zap")) then return end
+        local mental = subObj(pawn, "m_pMentalAbilityComponent")
+        local okA, t = pcall(function() return mental and mental.m_pCurrentAimTarget end)
+        if not (okA and valid(t)) then return end
+        charCls = charCls or StaticFindObject("/Script/Engine.Character")
+        local okC, isChar = pcall(function() return t:IsA(charCls) end)
+        if okC and not isChar then
+            pcall(function() mental.m_pCurrentAimTarget = nil end)
+            if not state.zapPropLogged then state.zapPropLogged = true; log("P2 zap: ignored a prop as the shared aim target (%s)", shortName(t)) end
         end
     end)
 end)()
