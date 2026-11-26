@@ -3642,11 +3642,37 @@ local function equip(i, pawn, wi)
     local w = findWeapon(list, WEAPONS[wi])
     if not (eq and w) then wlog("P%d: %s not found", i, WEAPONS[wi].label) return end
     if valid(cur) and OK.keyOf(cur) == OK.keyOf(w) then return end
+    -- remember the one in hand, for the LB quick swap
+    for wj, e in ipairs(WEAPONS) do
+        local wv = findWeapon(list, e)
+        if wv and valid(cur) and OK.keyOf(wv) == OK.keyOf(cur) then P[i].prevWi = wj end
+    end
     local ok = pcall(function() eq:RequestWeaponEquipped(w) end)
     if not ok then
         ok = pcall(function() eq:RequestWeaponEquippedByClass(w:GetClass()) end)
     end
     wlog("P%d switches to %s (%s)", i, WEAPONS[wi].label, ok and "ok" or "the game refused")
+end
+
+-- Tap LB (shorter than LB_TAP_TIME): swap to the weapon used before, like the game's own
+-- quick swap. Hold LB: the wheel.
+local function quickSwap(i, pawn)
+    local list, cur = weaponsOf(pawn)
+    local curWi = nil
+    for wi, e in ipairs(WEAPONS) do
+        local w = findWeapon(list, e)
+        if w and valid(cur) and OK.keyOf(w) == OK.keyOf(cur) then curWi = wi end
+    end
+    local p = P[i]
+    local want = p.prevWi
+    if not (want and want ~= curWi and findWeapon(list, WEAPONS[want])) then
+        want = nil
+        for step = 1, #WEAPONS do
+            local wi = ((curWi or 0) + step - 1) % #WEAPONS + 1
+            if wi ~= curWi and findWeapon(list, WEAPONS[wi]) then want = wi break end
+        end
+    end
+    if want then equip(i, pawn, want) end
 end
 
 OK.addTickJob("mindWheel", 0.0, function()
@@ -3665,7 +3691,18 @@ OK.addTickJob("mindWheel", 0.0, function()
             end
         end
         local pkBusy = state.pkHolding and state.pkHolding[i]
-        if lb and onFoot(pawn) and not state.trainerOpen and not pkBusy then
+        local tapT = CFG.LB_TAP_TIME or 0.22
+        if lb then
+            p.lbDownAt = p.lbDownAt or os.clock()
+        else
+            if p.lbDownAt and not p.overlay and not p.inputOff and os.clock() - p.lbDownAt < tapT
+               and onFoot(pawn) and not state.trainerOpen and not pkBusy then
+                quickSwap(i, pawn)
+            end
+            p.lbDownAt = nil
+        end
+        local lbHeld = lb and (p.overlay or os.clock() - p.lbDownAt >= tapT)
+        if lbHeld and onFoot(pawn) and not state.trainerOpen and not pkBusy then
             anyOpen = true
             -- while choosing, Crypto's own buttons are paused (the trainer menu does the same);
             -- the mod still reads the pad directly. The game's button list is never edited.

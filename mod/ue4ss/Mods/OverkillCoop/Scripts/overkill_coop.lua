@@ -140,7 +140,8 @@ local CFG = {
     P2_LOCK_COS = 0.975,              -- how close to the crosshair a target must be (0.975 = about 13 degrees)
     P2_LOCK_REAL = false,             -- (test: off) the mod no longer writes Player 2's lock into the game
     P2_GUN_FOLLOW_GAME = true,        -- Player 2's cyan bracket uses the game's own lock when it has one
-    P2_PK_AIM_WIDEN = 2.0,            -- Player 2's PK reach to the sides (the game's auto-target area x this)
+    P2_PK_AIM_WIDEN = 2.0,
+    P2_PK_GAP_HOLD = 0.6,             -- Player 2's arcs bridge the game's short PK-aim drop-outs (seconds)            -- Player 2's PK reach to the sides (the game's auto-target area x this)
     P2_TARGET_HEALTH = true,          -- Player 2 sees the health bar of what its gun is locked on to
     P2_ZAP_CHAIN = true,
     P2_ZAP_BRACKET = true,
@@ -4913,6 +4914,14 @@ do
             local gamePK = (okH and valid(hov) and keyOf(hov) ~= keyOf(pawn)) and hov or gameAim
             if gamePK and state.notTargetable(gamePK) then gamePK = nil end
             state.p2GamePK = gamePK
+            -- the game's PK aim for Player 2 drops out for a moment now and then (Player 1's
+            -- doesn't): keep the last one for a short while, as long as it's still close
+            if gamePK then
+                state.p2PKLast, state.p2PKLastAt = gamePK, os.clock()
+            elseif valid(state.p2PKLast) and os.clock() - (state.p2PKLastAt or 0) < CFG.P2_PK_GAP_HOLD
+                   and not state.deadChar(state.p2PKLast) then
+                gamePK = state.p2PKLast
+            end
             if CFG.P2_ARCS_FOLLOW_GAME then tgt = gamePK end   -- nothing for PK = no arcs (like Player 1)
             local snap = os.clock() < (state.snapUntil or 0)
             if (snap or (CFG.P2_TARGET_REPORT and (state.p2TgtReps or 0) < 30)) and os.clock() >= (state.p2TgtRepAt or 0) then
@@ -4926,12 +4935,8 @@ do
         end
         -- the gun's lock: the game's own for Player 2 when it has one (read before anything is
         -- written), else the mod's pick
-        do
-            local okG, g = pcall(function() return focus and focus.m_pCurrentAutoLockTarget end)
-            state.p2GameGun = (okG and valid(g) and keyOf(g) ~= keyOf(pawn) and not state.notTargetable(g)) and g or nil
-        end
         state.p2ModLock = aliveTgt
-        state.p2Lock = (CFG.P2_GUN_FOLLOW_GAME and state.p2GameGun) or aliveTgt
+        state.p2Lock = aliveTgt
         state.p2PKLock = tgt
         if CFG.P2_LOCK_REAL then
             if tgt then
@@ -5397,8 +5402,18 @@ do
             end
             state.p2BracketClass = cn
         end
-        -- the gun's lock: Player 2's own target (homing shots and the zap use it)
-        if not isZapGun and valid(state.p2Lock) then
+        -- the game's own lock for Player 2's gun (the Zap-O-Matic picks its own, correctly)
+        do
+            local g = nil
+            pcall(function()
+                local l = arrayToList(w.m_apCurrentLockedTargets)
+                for _, t in ipairs(l) do if valid(t) then g = t break end end
+            end)
+            if g and state.notTargetable(g) then g = nil end
+            state.p2GameGun = g
+        end
+        -- the gun's lock: Player 2's own target (homing shots use it) when the game has none
+        if not isZapGun and valid(state.p2Lock) and not state.p2GameGun then
             local t = state.p2Lock
             pcall(function()
                 local arr = w.m_apCurrentLockedTargets
@@ -5443,7 +5458,8 @@ do
             log("Player 2 lock-on bracket: own copy made (%s, for %s)", shortName(c), shortName(w))
         end
         pcall(function() copy.m_pWeapon = w end)
-        local tgt = state.p2Lock
+        local tgt = (CFG.P2_GUN_FOLLOW_GAME and state.p2GameGun) or state.p2Lock
+        state.p2BracketOn = tgt
         local x, y, sc, op = nil, nil, 0.95, 0.25
         if valid(tgt) then
             local loc = state.targetPoint(tgt)
@@ -9227,7 +9243,7 @@ OverkillCoop = {
             end
         end
         if valid(state.p2) then
-            parts[#parts + 1] = string.format("| P2 arcs=%s bracket=%s (game %s, mod %s)", nm(state.p2PKLock), nm(state.p2Lock), nm(state.p2GameGun), nm(state.p2ModLock))
+            parts[#parts + 1] = string.format("| P2 arcs=%s bracket=%s (game %s, mod %s)", nm(state.p2PKLock), nm(state.p2BracketOn), nm(state.p2GameGun), nm(state.p2ModLock))
         end
         local line = table.concat(parts, "  ")
         local now = os.clock()
@@ -9277,6 +9293,8 @@ end)()
     -- someone Player 1 isn't, their bar is handed to Player 2's screen, and back afterwards.
     local cur, curComp, wcClass = nil, nil, nil
     local function healthComp(actor)
+        local hb = subObj(actor, "m_pHealthBarComponent")
+        if hb then return hb end
         wcClass = wcClass or StaticFindObject("/Script/UMG.WidgetComponent")
         if not wcClass then return nil end
         local found = nil
@@ -9291,30 +9309,44 @@ end)()
     end
     local function giveBack()
         if curComp and valid(curComp) then
+            pcall(function() curComp:DisableWidget() end)
             pcall(function() curComp:SetOwnerPlayer(player1Controller().Player) end)
-            pcall(function() curComp:GetUserWidgetObject():HideWidget() end)
         end
         cur, curComp = nil, nil
     end
     onWorldChange(function() cur, curComp = nil, nil end); state.onP2Leave(giveBack)
     addTickJob("p2TargetHealth", 0.1, function()
         if not (CFG.P2_TARGET_HEALTH and valid(state.p2)) then if cur then giveBack() end return end
-        local t = state.p2Lock
+        local t = state.p2BracketOn
         if not (valid(t) and not state.deadChar(t)) then if cur then giveBack() end return end
         -- Player 1 is looking at the same one: leave it on Player 1's screen
-        local p1f = subObj(getPawn(player1Controller()), "m_pFocusComponent")
-        local okP, p1t = pcall(function() return p1f and p1f.m_pCurrentAutoLockTarget end)
-        if okP and valid(p1t) and keyOf(p1t) == keyOf(t) then if cur then giveBack() end return end
+        local p1Same = false
+        pcall(function()
+            local eq = subObj(getPawn(player1Controller()), "m_pEquipmentManagerComponent")
+            for _, x in ipairs(arrayToList(eq:GetCurrentWeapon().m_apCurrentLockedTargets)) do
+                if valid(x) and keyOf(x) == keyOf(t) then p1Same = true end
+            end
+        end)
+        if p1Same then if cur then giveBack() end return end
         if cur ~= keyOf(t) then
             giveBack()
             local c = healthComp(t)
-            if not c then cur = keyOf(t) return end
+            if not c then
+                cur = keyOf(t)
+                if (state.p2HealthLogs or 0) < 3 then state.p2HealthLogs = (state.p2HealthLogs or 0) + 1; log("P2 target health bar: %s has none", shortName(t)) end
+                return
+            end
             cur, curComp = keyOf(t), c
+            pcall(function() c:DisableWidget() end)
             local okO = pcall(function() c:SetOwnerPlayer(state.p2.Player) end)
-            pcall(function() c:GetUserWidgetObject():ShowWidget() end)
-            if not state.p2HealthLogged then
-                state.p2HealthLogged = true
-                log("P2 target health bar: %s handed to Player 2 (%s)", shortName(t), okO and "ok" or "failed")
+            pcall(function() c:EnsureWidgetInitialized() end)
+            pcall(function() c:EnableWidget() end)
+            local okW, w = pcall(function() return c:GetUserWidgetObject() end)
+            if okW and valid(w) then pcall(function() w:ShowWidget() end) end
+            if (state.p2HealthLogs or 0) < 3 then
+                state.p2HealthLogs = (state.p2HealthLogs or 0) + 1
+                log("P2 target health bar: %s (%s) owner %s, widget %s", shortName(t), shortName(c), okO and "set" or "failed",
+                    (okW and valid(w)) and shortName(w) or "none")
             end
         elseif curComp and valid(curComp) then
             pcall(function() curComp:SetVisibility(true, false) end)
