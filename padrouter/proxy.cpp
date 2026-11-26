@@ -20,6 +20,7 @@
 #define _WIN32_WINNT 0x0A00  // Windows 10: makes Xinput.h declare the battery/keystroke types
 #define WINVER 0x0A00
 #include <Windows.h>
+#include <TlHelp32.h>
 #include <Xinput.h>
 #include <mmsystem.h>
 #pragma comment(lib, "winmm.lib")
@@ -42,6 +43,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 // ============================================================================
 // Paths and logging
@@ -960,6 +962,123 @@ extern "C" DWORD WINAPI Proxy_XInputPowerOffController(DWORD userIndex)
 // DAHPadLink handshake (p1target= / p2target= / layout=). Everything else is unchanged.
 // The function is found by its bytes, so the fix keeps working if the exe moves code.
 // ============================================================================
+// ============================================================================
+// Camera-read watcher (test tool). The Lua mod asks for it with
+// padrouter_watch_request.txt: "watch <hex address> <seconds>". A hardware data breakpoint
+// is put on that address in every thread of the game for a few seconds; each read/write is
+// counted by the instruction that did it (and the return address on the stack, for small
+// getter functions). The top ones are written to this log as offsets into the game exe, so
+// we can find which game code reads Player 1's camera (the crowd / traffic detail code).
+// ============================================================================
+static std::atomic<bool> g_WatchOn{false};
+static std::atomic<long> g_WatchHits{0};
+static constexpr long kWatchCap = 400000;
+static uintptr_t g_WatchRip[kWatchCap];
+static uintptr_t g_WatchRet[kWatchCap];
+static PVOID g_WatchVeh = nullptr;
+
+static LONG CALLBACK WatchVeh(PEXCEPTION_POINTERS ep)
+{
+    if (ep->ExceptionRecord->ExceptionCode != EXCEPTION_SINGLE_STEP) { return EXCEPTION_CONTINUE_SEARCH; }
+    CONTEXT* c = ep->ContextRecord;
+    if (!(c->Dr6 & 0x1)) { return EXCEPTION_CONTINUE_SEARCH; }
+    c->Dr6 = 0;
+    if (g_WatchOn.load(std::memory_order_relaxed))
+    {
+        const long i = g_WatchHits.fetch_add(1, std::memory_order_relaxed);
+        if (i < kWatchCap)
+        {
+            g_WatchRip[i] = c->Rip;
+            uintptr_t ret = 0;
+            __try { ret = *reinterpret_cast<uintptr_t*>(c->Rsp); } __except (EXCEPTION_EXECUTE_HANDLER) { ret = 0; }
+            g_WatchRet[i] = ret;
+        }
+    }
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+static void SetWatchOnAllThreads(uintptr_t addr, bool on)
+{
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) { return; }
+    THREADENTRY32 te{}; te.dwSize = sizeof(te);
+    const DWORD pid = GetCurrentProcessId(), self = GetCurrentThreadId();
+    int n = 0;
+    if (Thread32First(snap, &te))
+    {
+        do
+        {
+            if (te.th32OwnerProcessID != pid || te.th32ThreadID == self) { continue; }
+            HANDLE t = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
+            if (!t) { continue; }
+            if (SuspendThread(t) != DWORD(-1))
+            {
+                CONTEXT c{}; c.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+                if (GetThreadContext(t, &c))
+                {
+                    if (on)
+                    {
+                        c.Dr0 = addr;
+                        c.Dr7 = (c.Dr7 & ~0xF0003ull) | 0x1ull | (3ull << 16) | (3ull << 18);   // L0, read/write, 4 bytes
+                    }
+                    else
+                    {
+                        c.Dr0 = 0;
+                        c.Dr7 &= ~0xF0003ull;
+                    }
+                    if (SetThreadContext(t, &c)) { ++n; }
+                }
+                ResumeThread(t);
+            }
+            CloseHandle(t);
+        } while (Thread32Next(snap, &te));
+    }
+    CloseHandle(snap);
+    Log("Camera watch: %s on %d threads", on ? "armed" : "removed", n);
+}
+
+static unsigned long long FindFloatNear(unsigned long long addr, float want)
+{
+    __try
+    {
+        for (int k = 0; k < 0x60; k += 4)
+        {
+            const float v = *reinterpret_cast<float*>(addr + k);
+            if (std::fabs(v - want) < 2.0f) { return addr + k; }
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    return 0;
+}
+
+static void RunCameraWatch(uintptr_t addr, int seconds)
+{
+    if (!g_WatchVeh) { g_WatchVeh = AddVectoredExceptionHandler(1, &WatchVeh); }
+    g_WatchHits.store(0);
+    g_WatchOn.store(true);
+    SetWatchOnAllThreads(addr, true);
+    Sleep(DWORD(std::clamp(seconds, 1, 20)) * 1000);
+    SetWatchOnAllThreads(addr, false);
+    g_WatchOn.store(false);
+    const long total = std::min(g_WatchHits.load(), kWatchCap);
+    const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    auto top = [&](const uintptr_t* arr, const char* what) {
+        std::unordered_map<uintptr_t, long> counts;
+        for (long i = 0; i < total; ++i) { counts[arr[i]]++; }
+        std::vector<std::pair<uintptr_t, long>> v(counts.begin(), counts.end());
+        std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.second > b.second; });
+        Log("Camera watch: top %s (of %ld accesses, %zu different):", what, total, v.size());
+        for (size_t k = 0; k < v.size() && k < 60; ++k)
+        {
+            const uintptr_t a = v[k].first;
+            if (a >= base && a < base + 0x10000000) { Log("  exe+%llx  x%ld", (unsigned long long)(a - base), v[k].second); }
+            else { Log("  %s+?  %p  x%ld", ModuleNameOf(reinterpret_cast<void*>(a)).c_str(), reinterpret_cast<void*>(a), v[k].second); }
+        }
+    };
+    top(g_WatchRip, "instructions");
+    top(g_WatchRet, "return addresses");
+}
+
 struct FVec2 { float X, Y; };
 struct FIntPt { int32_t X, Y; };
 using GetSizeXYFn = FIntPt* (*)(void* viewport, FIntPt* out);
@@ -2148,6 +2267,42 @@ static DWORD WINAPI Worker(LPVOID)
         }
 
         probe.Update();
+
+        // Camera-read watcher request from the Lua mod (test tool)
+        {
+            static ULONGLONG lastWatchCheck = 0;
+            if (now - lastWatchCheck > 500)
+            {
+                lastWatchCheck = now;
+                const std::wstring paths[] = {L"padrouter_watch_request.txt", g_ExeDir + L"\\ue4ss\\padrouter_watch_request.txt"};
+                for (const auto& path : paths)
+                {
+                    FILE* f = _wfopen(path.c_str(), L"r");
+                    if (!f) { continue; }
+                    unsigned long long addr = 0; int secs = 6; float wantX = 0.0f;
+                    const int got = std::fscanf(f, "watch %llx %d %f", &addr, &secs, &wantX);
+                    std::fclose(f);
+                    _wremove(path.c_str());
+                    if (got >= 3 && addr)
+                    {
+                        // the camera location's exact spot: the first float near the given
+                        // address that matches the camera's X right now
+                        const unsigned long long found = FindFloatNear(addr, wantX);
+                        Log("Camera watch: camera X %.1f found at %llx (searched from %llx)", wantX, found, addr);
+                        addr = found;
+                    }
+                    if (got >= 1 && addr)
+                    {
+                        Log("Camera watch: watching %llx for %d s", addr, secs);
+                        static uintptr_t s_addr; static int s_secs;
+                        s_addr = uintptr_t(addr); s_secs = secs;
+                        HANDLE th = CreateThread(nullptr, 0, [](LPVOID) -> DWORD { RunCameraWatch(s_addr, s_secs); return 0; }, nullptr, 0, nullptr);
+                        if (th) { CloseHandle(th); }
+                    }
+                    break;
+                }
+            }
+        }
 
         // Xbox Guide button on any pad: ask the Lua mod for a text snapshot (it dumps the last
         // few seconds of what each player was targeting). Only the hidden GetStateEx reports it.

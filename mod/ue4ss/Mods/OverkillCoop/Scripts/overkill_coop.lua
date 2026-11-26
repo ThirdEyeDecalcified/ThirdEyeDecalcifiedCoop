@@ -200,6 +200,7 @@ local CFG = {
     P2_ARC_DIM = 0.55,
     P2_BRACKET_SHARED = false,        -- (off: it turned Player 2's cyan bracket gold)
     P2_ARCS_FOLLOW_GAME = true,       -- the arcs go on what the game's PK is aimed at for Player 2 (what RB grabs), when it has one
+    CAM_WATCH_AUTO = true,            -- (test) once per session, 40 s after Player 2 joins: the DLL logs which game code reads Player 1's camera
     TEST_RECORDER = true,             -- (test) remember the last 12 s of targeting; Guide button / Ctrl+F8 writes it to the log
     P2_TARGET_REPORT = false,         -- (test) log what the game and the mod pick for Player 2 every 2 s (Ctrl+F8 does it on demand)
     P2_BRACKET_NUDGE_X = 0,           -- Player 2's cyan lock-on bracket: screen nudge (pixels)
@@ -3846,8 +3847,10 @@ state.snapshot = function(why)
             end
         end
     end)
-    pcall(state.populationReport)
-    pcall(state.radarReport)
+    for _, f in ipairs({ "populationReport", "radarReport" }) do
+        local okR, errR = pcall(function() state[f]() end)
+        if not okR then log("  (%s failed: %s)", f, tostring(errR)) end
+    end
     log("===== end of snapshot %d =====", state.snapN)
 end
 -- things the lock-ons must never pick: the players' saucer (its landing light), any player
@@ -9716,3 +9719,43 @@ state.radarReport = function()
         end
     end
 end
+
+-- Test tool for the DLL work: find the game code that reads Player 1's camera (the crowd /
+-- traffic detail decides from it). The pad router DLL watches Player 1's camera position for
+-- a few seconds and logs which code read it. Runs once 40 s after Player 2 joins; Ctrl+F7 again.
+;(function()
+    local function start(secs)
+        local pcm = subObj(player1Controller(), "PlayerCameraManager")
+        if not pcm then log("Camera watch: no camera") return end
+        local off = nil
+        pcall(function()
+            local cls = pcm:GetClass()
+            local depth = 0
+            while valid(cls) and depth < 8 and not off do
+                cls:ForEachProperty(function(prop)
+                    local okN, n = pcall(function() return prop:GetFName():ToString() end)
+                    if okN and n == "CameraCachePrivate" then off = prop:GetOffset_Internal() end
+                end)
+                cls = cls:GetSuperStruct()
+                depth = depth + 1
+            end
+        end)
+        local okA, addr = pcall(function() return pcm:GetAddress() end)
+        local okL, loc = pcall(function() return pcm:GetCameraLocation() end)
+        if not (off and okA and okL and loc) then log("Camera watch: couldn't find the camera data (offset %s)", tostring(off)) return end
+        local f = io.open("padrouter_watch_request.txt", "w")
+        if not f then log("Camera watch: couldn't write the request") return end
+        f:write(string.format("watch %x %d %.3f\n", addr + off, secs, loc.X))
+        f:close()
+        log("Camera watch: asked the DLL to watch Player 1's camera for %d s (data at +0x%x)", secs, off)
+    end
+    state.startCamWatch = start
+    local armedAt = nil
+    state.onP2Leave(function() armedAt = nil end)
+    addTickJob("camWatchAuto", 2.0, function()
+        if not (CFG.CAM_WATCH_AUTO and valid(state.p2)) or state.camWatchDone then return end
+        armedAt = armedAt or os.clock()
+        if os.clock() - armedAt > 40 then state.camWatchDone = true; start(6) end
+    end)
+    if Key.F7 ~= nil then RegisterKeyBind(Key.F7, { ModifierKey.CONTROL }, function() start(6) end) end
+end)()
