@@ -975,6 +975,10 @@ static std::atomic<long> g_WatchHits{0};
 static constexpr long kWatchCap = 400000;
 static uintptr_t g_WatchRip[kWatchCap];
 static uintptr_t g_WatchRet[kWatchCap];
+static constexpr int kWatchDepth = 7;
+static constexpr long kWatchStackCap = 60000;
+static uintptr_t g_WatchStack[kWatchStackCap][kWatchDepth];
+static std::atomic<long> g_WatchStacks{0};
 static PVOID g_WatchVeh = nullptr;
 
 static LONG CALLBACK WatchVeh(PEXCEPTION_POINTERS ep)
@@ -992,6 +996,25 @@ static LONG CALLBACK WatchVeh(PEXCEPTION_POINTERS ep)
             uintptr_t ret = 0;
             __try { ret = *reinterpret_cast<uintptr_t*>(c->Rsp); } __except (EXCEPTION_EXECUTE_HANDLER) { ret = 0; }
             g_WatchRet[i] = ret;
+            // every 3rd hit: who called, a few frames up (unwound with the exe's own tables)
+            if ((i % 3) == 0)
+            {
+                const long si = g_WatchStacks.fetch_add(1, std::memory_order_relaxed);
+                if (si < kWatchStackCap)
+                {
+                    CONTEXT ctx = *c;
+                    for (int k = 0; k < kWatchDepth; ++k)
+                    {
+                        DWORD64 imageBase = 0;
+                        PRUNTIME_FUNCTION rf = RtlLookupFunctionEntry(ctx.Rip, &imageBase, nullptr);
+                        if (!rf) { g_WatchStack[si][k] = 0; break; }
+                        PVOID hd = nullptr; DWORD64 est = 0;
+                        RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, ctx.Rip, rf, &ctx, &hd, &est, nullptr);
+                        g_WatchStack[si][k] = ctx.Rip;
+                        if (!ctx.Rip) { break; }
+                    }
+                }
+            }
         }
     }
     return EXCEPTION_CONTINUE_EXECUTION;
@@ -1055,6 +1078,8 @@ static void RunCameraWatch(uintptr_t addr, int seconds)
 {
     if (!g_WatchVeh) { g_WatchVeh = AddVectoredExceptionHandler(1, &WatchVeh); }
     g_WatchHits.store(0);
+    g_WatchStacks.store(0);
+    std::memset(g_WatchStack, 0, sizeof(g_WatchStack));
     g_WatchOn.store(true);
     SetWatchOnAllThreads(addr, true);
     Sleep(DWORD(std::clamp(seconds, 1, 20)) * 1000);
@@ -1076,7 +1101,29 @@ static void RunCameraWatch(uintptr_t addr, int seconds)
         }
     };
     top(g_WatchRip, "instructions");
-    top(g_WatchRet, "return addresses");
+    // call chains (exe offsets, nearest caller first)
+    {
+        const long ns = std::min(g_WatchStacks.load(), kWatchStackCap);
+        std::unordered_map<std::string, long> chains;
+        for (long i = 0; i < ns; ++i)
+        {
+            std::string key;
+            for (int k = 0; k < kWatchDepth; ++k)
+            {
+                const uintptr_t a = g_WatchStack[i][k];
+                if (!a) { break; }
+                char b[32];
+                if (a >= base && a < base + 0x10000000) { std::snprintf(b, sizeof(b), "%llx ", (unsigned long long)(a - base)); }
+                else { std::snprintf(b, sizeof(b), "? "); }
+                key += b;
+            }
+            chains[key]++;
+        }
+        std::vector<std::pair<std::string, long>> v(chains.begin(), chains.end());
+        std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.second > b.second; });
+        Log("Camera watch: top call chains (of %ld samples, %zu different), exe offsets, nearest first:", ns, v.size());
+        for (size_t k = 0; k < v.size() && k < 80; ++k) { Log("  x%ld  %s", v[k].second, v[k].first.c_str()); }
+    }
 }
 
 struct FVec2 { float X, Y; };
