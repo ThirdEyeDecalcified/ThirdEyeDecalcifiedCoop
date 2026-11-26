@@ -8894,7 +8894,7 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
         { "Everything here is a work in progress and may change between versions." },
         { "Made for two players. Players 3 and 4 are an early test and not ready yet: four players will come in time." },
         { "MOD FEATURES", true },
-        { "Every part of the mod that works outside the menus can be switched off below, for a near-vanilla game. Rows marked CO-OP are needed for split screen to work properly. Save a row with X to keep it." },
+        { "Switch parts of the mod off below. Near-vanilla turns them all off at once (the trainer stays). The split-screen fixes themselves only run while Player 2 is in, so a one-player game is untouched by them; Co-op extras covers the rest. Rows marked CO-OP are needed for split screen to play properly. Save a row with X to keep it." },
     }
     local ISSUES = {
         { "KNOWN ISSUES  (early access: all work in progress, subject to change)", true },

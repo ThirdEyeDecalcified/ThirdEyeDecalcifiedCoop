@@ -828,19 +828,39 @@ local function feature(key, label, flags, coop, note)
             log("Mod features: %s %s%s", label, on and "on" or "off", (coop and not on and valid(state.p2)) and " (WARNING: split screen needs this)" or "")
         end })
 end
+-- Near-vanilla: every switch below off at once (the trainer itself stays)
+local ALL_FEATURE_KEYS = {}
+local function featureRow(e) ALL_FEATURE_KEYS[#ALL_FEATURE_KEYS + 1] = e; add(e) end
+local realFeature = feature
+feature = function(key, label, flags, coop, note)
+    realFeature(key, label, flags, coop, note)
+    ALL_FEATURE_KEYS[#ALL_FEATURE_KEYS + 1] = state.trainerExtras[#state.trainerExtras]
+end
+add({ key = "f_vanilla", page = 1, label = "Near-vanilla game (all of the mod's features below off; trainer stays)",
+    options = { "Off", "On" },
+    get = function()
+        for _, e in ipairs(ALL_FEATURE_KEYS) do local okG, v = pcall(e.get); if okG and v ~= "Off" then return "Off" end end
+        return "On"
+    end,
+    set = function(v)
+        local off = v == "On"
+        for _, e in ipairs(ALL_FEATURE_KEYS) do pcall(e.set, off and "Off" or "On") end
+        log("Mod features: near-vanilla %s%s", off and "on (everything off)" or "off (everything back on)",
+            (off and valid(state.p2)) and " (WARNING: Player 2 is in: split screen needs the co-op features)" or "")
+    end })
+-- single player
 feature("f_wheel", "Mind & weapons wheel on LB (off: the game's own wheel)", { "MIND_WHEEL" }, true)
 feature("f_saucerwheel", "Saucer weapon wheel on LB (each player their own; off: the game's)", { "SAUCER_WHEEL" }, true)
 feature("f_powers", "Mind powers on LT (the mod's new powers)", { "MIND_POWERS" })
 feature("f_panel", "Power panel and concentration meter", { "WHEEL_PANEL" })
-add({ key = "f_pk", page = 1, label = "PK overhaul (hold / push / pull, sizes, throws)", options = { "On", "Off" },
+featureRow({ key = "f_pk", page = 1, label = "PK overhaul (hold / push / pull, sizes, throws)", options = { "On", "Off" },
     get = function() return (state.pkIsEnabled and not state.pkIsEnabled()) and "Off" or "On" end,
     set = function(v) if state.pkSetEnabled then state.pkSetEnabled(v ~= "Off") end; log("Mod features: PK overhaul %s", v) end })
-feature("f_downed", "Downed and revive (a partner can pick you up)", { "DOWNED_SYSTEM" }, true)
-feature("f_pickups", "Player 2's pickups go to Player 1 (shared brains and ammo)", { "P2_PICKUPS" }, true)
-feature("f_tags", "Partner tags over heads", { "PARTNER_MARKERS" })
-feature("f_bars", "Each player's own shield bar by the split line", { "PLAYER_BARS" }, true)
-feature("f_vignette", "Red hurt screen only for the player who was hurt", { "OWN_DAMAGE_VIGNETTE" }, true)
-feature("f_lod", "Split-screen detail range (keeps detail further out)", { "SPLIT_LOD_PROFILE" }, true)
-feature("f_p2zap", "Player 2's Zap-O-Matic chain, bracket and arcs", { "P2_ZAP_CHAIN", "P2_ZAP_BRACKET", "P2_ZAP_ARCS" }, true)
-feature("f_p2health", "Player 2 sees the health bar of their target", { "P2_TARGET_HEALTH" }, true)
 feature("f_recorder", "Test recorder (Guide button writes the last 12 s to the log)", { "TEST_RECORDER" })
+-- co-op: everything that only runs while Player 2 is in. The fixes split screen can't work
+-- without (each player's HUD, radar, aim and markers) only ever run in split screen, so a
+-- one-player game is untouched by them; these are the extras on top.
+feature("f_join", "Player 2 can join (Start on pad 2)", { "PAD_SPAWN_ON_START" })
+feature("f_coop", "Co-op extras (revive, shared pickups, tags, own shield bars, P2 zap chain and more)",
+    { "DOWNED_SYSTEM", "P2_PICKUPS", "PARTNER_MARKERS", "TAG_SKIN_ICON", "PLAYER_BARS", "OWN_DAMAGE_VIGNETTE", "SPLIT_LOD_PROFILE",
+      "P2_ZAP_CHAIN", "P2_ZAP_BRACKET", "P2_ZAP_ARCS", "P2_TARGET_HEALTH", "P2_SKIN_COMBO", "PK_CROWD_PER_PLAYER" }, true)
