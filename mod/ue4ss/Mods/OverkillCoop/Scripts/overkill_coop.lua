@@ -7739,12 +7739,19 @@ log("Keys: Ctrl+Y add Player 2 | Ctrl+I remove Player 2 | Ctrl+T bring P2 to P1 
         if move then
             if not state.sizeSpeed[pk] then
                 state.sizeSpeed[pk] = {}
-                for _, f in ipairs({ "MaxWalkSpeed", "MaxCustomMovementSpeed", "MaxFlySpeed", "MaxAcceleration" }) do
+                for _, f in ipairs({ "MaxWalkSpeed", "MaxCustomMovementSpeed", "MaxFlySpeed", "MaxAcceleration",
+                                     "JumpZVelocity", "MaxStepHeight", "BrakingDecelerationFlying", "BrakingDecelerationFalling",
+                                     "MaxSwimSpeed", "MaxWalkSpeedCrouched" }) do
                     pcall(function() state.sizeSpeed[pk][f] = move[f] end)
                 end
             end
-            for f, base in pairs(state.sizeSpeed[pk]) do
-                if type(base) == "number" then pcall(function() move[f] = base * speedMul end) end
+            local scaleBy = {
+                JumpZVelocity = math.sqrt(f),            -- jump height goes with size
+                MaxStepHeight = f,                       -- giants step over cars and walls, tiny over pebbles
+                BrakingDecelerationFlying = speedMul, BrakingDecelerationFalling = speedMul,
+            }
+            for fname, base in pairs(state.sizeSpeed[pk]) do
+                if type(base) == "number" then pcall(function() move[fname] = base * (scaleBy[fname] or speedMul) end) end
             end
         end
         -- a giant walks through the saucer instead of getting stuck on it
@@ -10274,7 +10281,7 @@ end)()
                   choice[kind] = v
                   -- the Disintegrator's burning comes from its fire upgrades, not the projectile:
                   -- with another projectile in it, those are off for the session (back on with default)
-                  if kind:find("Disintegrator") and state.upgSet then
+                  if false and kind:find("Disintegrator") and state.upgSet then
                       for _, t in ipairs({ "Weapon.DisintegratorRay.CascadeIncinerator", "Weapon.DisintegratorRay.CascadeImmolator" }) do
                           state.upgSet(t, v == "Game default" and "game" or "off")
                       end
@@ -10400,6 +10407,7 @@ end)()
     -- ---------- upgrades (this session only), shown as chains like the Pox lab ----------
     -- Each weapon / ability's upgrades are a chain (cheapest first = level 1). One row per
     -- chain: pick the level; the boxes show it (filled = on). "Game (save)" is what you bought.
+    -- Levels can only add to what you bought (taking a bought one away locked the whole weapon).
     local chains, chainOf, upgState = {}, {}, {}
     local UPG_LOGGED = false
     local function unlocks()
@@ -10411,8 +10419,10 @@ end)()
         if not u then return end
         local tag = { TagName = FName(tagName) }
         if mode == "off" then
+            -- (only what this session added can be taken away: locking a bought upgrade locked its
+            -- whole weapon - the Disintegrator couldn't be held - so that's never done)
+            pcall(function() u:RemoveLockedTag(tag) end)
             pcall(function() u:LockRemoveTag(tag, false) end)
-            pcall(function() u:PlayerState_LockTag(getWorld(), tag) end)
         elseif mode == "on" then
             pcall(function() u:RemoveLockedTag(tag) end)
             pcall(function() u:UnlockTag(tag, false) end)
@@ -10462,6 +10472,7 @@ end)()
                   if not ch.level then
                       local have = 0
                       for _, it in ipairs(ch.items) do if owned(it.tag) then have = have + 1 end end
+                      ch.have = have
                       ch.options[1] = string.format("Game (save)  %s  you have %d of %d", boxes(have, #ch.items), have, #ch.items)
                   end
                   return true
@@ -10513,7 +10524,7 @@ end)()
         return n
     end
     add({ key = "upg_all", page = PAGE_UPG, label = "ALL UPGRADES (this session only, your save keeps what you bought)",
-          options = { "Game (save)", "Base Crypto (all off)", "Fully upgraded (all on)" }, show = function() return true end,
+          options = { "Game (save)", "Fully upgraded (all on)" }, show = function() return true end,
           get = function() return state.upgAll or "Game (save)" end,
           set = function(v)
               state.upgAll = v
@@ -10534,6 +10545,13 @@ end)()
         upgScanned = true
         local n = scanUpgrades()
         if n > 0 then log("Upgrades: %d listed in %d chains", n, #chains) end
+        -- undo the temporary locks an earlier version put on upgrades (they locked whole weapons)
+        local u = unlocks()
+        if u then
+            for _, ch in ipairs(chains) do
+                for _, it in ipairs(ch.items) do pcall(function() u:RemoveLockedTag({ TagName = FName(it.tag) }) end) end
+            end
+        end
         for _, ch in ipairs(chains) do if ch.level then applyChain(ch, "Level " .. ch.level) end end
     end)
 
